@@ -53,7 +53,10 @@ extern sai_status_t setRecordingOutputDir(
 extern void recordLine(std::string s);
 extern std::string joinFieldValues(
         _In_ const std::vector<swss::FieldValueTuple> &values);
-
+extern std::string joinOrderedFieldValues(
+        _In_ const std::vector<swss::FieldValueTuple> &values);
+extern std::string joinOrderedFieldValues(
+        _In_ const std::map<std::string, std::string> &map);
 // other global declarations
 
 extern volatile bool g_record;
@@ -66,6 +69,7 @@ extern std::shared_ptr<swss::ProducerTable>         g_asicState;
 extern std::shared_ptr<swss::ConsumerTable>         g_redisGetConsumer;
 extern std::shared_ptr<swss::NotificationConsumer>  g_redisNotifications;
 extern std::shared_ptr<swss::RedisClient>           g_redisClient;
+extern std::shared_ptr<swss::RedisClient>           g_redisRestoreClient;
 
 extern std::mutex g_apimutex;
 

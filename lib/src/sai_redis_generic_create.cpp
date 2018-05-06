@@ -1,4 +1,5 @@
 #include "sai_redis.h"
+#include "sairedis.h"
 #include "meta/sai_serialize.h"
 #include "meta/saiattributelist.h"
 
@@ -197,6 +198,140 @@ void redis_free_virtual_object_id(
     }
 }
 
+// If same attributes provided for object create, the original OID should be returned
+// without generating new OID and sending create request down.
+sai_status_t redis_idempotent_create(
+        _In_ sai_object_type_t object_type,
+        _Out_ sai_object_id_t* object_id,
+        _In_ sai_object_id_t switch_id,
+        _In_ uint32_t attr_count,
+        _In_ const sai_attribute_t *attr_list)
+{
+    SWSS_LOG_ENTER();
+
+    std::string str_object_type = sai_serialize_object_type(object_type);
+    std::vector<swss::FieldValueTuple> entry = SaiAttributeList::serialize_attr_list(
+            object_type,
+            attr_count,
+            attr_list,
+            false);
+
+    if (entry.size() == 0)
+    {
+        // make sure that we put object into db
+        // even if there are no attributes set
+        swss::FieldValueTuple null("NULL", "NULL");
+
+        entry.push_back(null);
+        SWSS_LOG_DEBUG("Empty attribute list for key creation of type %s", str_object_type.c_str());
+    }
+
+    // Join fv in order is critical for upgrade and restart, for people might re-arrange attribute in new version of code
+    // which should be avoided though, also individulal attribute set may change the order too.
+    // It is assumed that for each individual entry, the internal order would not change before and after restart.
+    std::string fvStr = joinOrderedFieldValues(entry);
+    std::string key;
+
+    if (object_type == SAI_OBJECT_TYPE_SWITCH)
+    {
+        auto ptr_object_id_str = g_redisRestoreClient->hget("SWITCH", "switch_oid");
+        if (ptr_object_id_str != NULL)
+        {
+            sai_deserialize_object_id(*ptr_object_id_str, *object_id);
+
+            key = str_object_type + ":" + *ptr_object_id_str;
+
+            SWSS_LOG_DEBUG("RESTORE: skipping generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+            return SAI_STATUS_SUCCESS;
+        }
+    }
+    else
+    {
+        std::string attrFvStr = ATTR2OID_PREFIX + fvStr;
+        auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+
+        if (oid_map.size() == 0)
+        {
+            // Check default attributes OID mapping table.
+            attrFvStr = DEFAULT_ATTR2OID_PREFIX + fvStr;
+            oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+        }
+
+        if (oid_map.size() > 1)
+        {
+            SWSS_LOG_ERROR("RESTORE: generic create key: Fields: %s has %d keys",
+                    attrFvStr.c_str(), oid_map.size());
+            return SAI_STATUS_FAILURE;
+        }
+        else if (oid_map.size() == 1)
+        {
+            for (auto &kv: oid_map)
+            {
+                sai_object_id_t objectIdKey;
+
+                key = kv.first;
+
+                if (key.find(str_object_type) != 0)
+                {
+                    SWSS_LOG_ERROR("RESTORE: Invalid OID type: %s, expecting %s", key.c_str(), str_object_type.c_str());
+                    return SAI_STATUS_INVALID_OBJECT_TYPE;
+                }
+
+                sai_deserialize_object_id(key.substr(str_object_type.size()+1), objectIdKey);
+
+                *object_id = objectIdKey;
+            }
+            SWSS_LOG_INFO("RESTORE: skipping generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+            return SAI_STATUS_SUCCESS;
+        }
+    }
+
+    // on create vid is put in db by syncd
+    *object_id = redis_create_virtual_object_id(object_type, switch_id);
+
+    if (*object_id == SAI_NULL_OBJECT_ID)
+    {
+        SWSS_LOG_ERROR("failed to create %s, with switch id: %s",
+                sai_serialize_object_type(object_type).c_str(),
+                sai_serialize_object_id(switch_id).c_str());
+
+        return SAI_STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    std::string serialized_object_id = sai_serialize_object_id(*object_id);
+
+    key = str_object_type + ":" + serialized_object_id;
+
+    SWSS_LOG_DEBUG("generic create key: %s, fields: %lu", key.c_str(), entry.size());
+
+    if (g_record)
+    {
+        recordLine("c|" + key + "|" + fvStr);
+    }
+
+    g_asicState->set(key, entry, "create");
+
+    SWSS_LOG_DEBUG("RESTORE_DB: generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+    if (object_type == SAI_OBJECT_TYPE_SWITCH)
+    {
+        // Attributes for switch create contains running time function pointers which will be changed after restart
+        g_redisRestoreClient->hset("SWITCH", "switch_oid", serialized_object_id);
+    }
+    else
+    {
+        g_redisRestoreClient->hset(ATTR2OID_PREFIX + fvStr, key, "NULL");
+        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry);
+        if (g_objectOwner != "")
+        {
+            g_redisRestoreClient->hset(key, "owner", g_objectOwner);
+        }
+    }
+
+    // we assume create will always succeed which may not be true
+    // we should make this synchronous call
+    return SAI_STATUS_SUCCESS;
+}
+
 sai_status_t internal_redis_generic_create(
         _In_ sai_object_type_t object_type,
         _In_ const std::string &serialized_object_id,
@@ -226,9 +361,27 @@ sai_status_t internal_redis_generic_create(
 
     SWSS_LOG_DEBUG("generic create key: %s, fields: %lu", key.c_str(), entry.size());
 
+    std::string fvStr = joinFieldValues(entry);
+
+    // For idempotent SAI redis operation, only non-sai_object_id_t objects will hit here.
+    if (g_idempotent)
+    {
+        std::string restoreKey = OID2ATTR_PREFIX + key;
+
+        // For non-sai_object_id_t object, the key may be used directly.
+        auto exist = g_redisRestoreClient->exists(restoreKey);
+        if (exist > 0)
+        {
+            SWSS_LOG_INFO("RESTORE: skipping generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+            return SAI_STATUS_SUCCESS;
+        }
+
+        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry);
+    }
+
     if (g_record)
     {
-        recordLine("c|" + key + "|" + joinFieldValues(entry));
+        recordLine("c|" + key + "|" + fvStr);
     }
 
     g_asicState->set(key, entry, "create");
@@ -247,6 +400,10 @@ sai_status_t redis_generic_create(
 {
     SWSS_LOG_ENTER();
 
+    if (g_idempotent)
+    {
+        return redis_idempotent_create(object_type, object_id, switch_id, attr_count, attr_list);
+    }
     // on create vid is put in db by syncd
     *object_id = redis_create_virtual_object_id(object_type, switch_id);
 

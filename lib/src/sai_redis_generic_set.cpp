@@ -1,4 +1,5 @@
 #include "sai_redis.h"
+#include "sairedis.h"
 #include "meta/sai_serialize.h"
 #include "meta/saiattributelist.h"
 
@@ -21,13 +22,119 @@ sai_status_t internal_redis_generic_set(
 
     SWSS_LOG_DEBUG("generic set key: %s, fields: %lu", key.c_str(), entry.size());
 
+    if (g_idempotent)
+    {
+        // For set, there is only one entry.
+        swss::FieldValueTuple &fv =  entry[0];
+
+        if (object_type == SAI_OBJECT_TYPE_SWITCH)
+        {
+            auto ptr_object_id_str = g_redisRestoreClient->hget("SWITCH", fvField(fv));
+
+            if (ptr_object_id_str == NULL || fvValue(fv) == *ptr_object_id_str)
+            {
+                SWSS_LOG_INFO("RESTORE: skipping generic set key: %s, %s:%s",
+                        key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
+                return SAI_STATUS_SUCCESS;
+            }
+            else
+            {
+                g_redisRestoreClient->hset("SWITCH", fvField(fv), fvValue(fv));
+                g_asicState->set(key, entry, "set");
+                return SAI_STATUS_SUCCESS;
+            }
+        }
+
+        std::string restoreKey = OID2ATTR_PREFIX + key;
+        auto attr_map = g_redisRestoreClient->hgetallordered(restoreKey);
+
+        if (attr_map.size() > 0)
+        {
+            auto it = attr_map.begin();
+            while (it != attr_map.end())
+            {
+                if (fvField(fv) == it->first)
+                {
+                    break;
+                }
+                it++;
+            }
+            // If no change to attribute value, just return success.
+            if (it != attr_map.end() && it->second == fvValue(fv))
+            {
+                SWSS_LOG_INFO("RESTORE: skipping generic set key: %s, %s:%s no change",
+                        key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
+                return SAI_STATUS_SUCCESS;
+            }
+
+            // If it is default object created by libsai, don't check reverse mapping.
+            std::string defaultObjKey = DEFAULT_OBJ_PREFIX + key;
+            auto tmp_map = g_redisRestoreClient->hgetall(defaultObjKey);
+
+            // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
+            if (object_type != SAI_OBJECT_TYPE_FDB_ENTRY &&
+                object_type != SAI_OBJECT_TYPE_NEIGHBOR_ENTRY &&
+                object_type != SAI_OBJECT_TYPE_ROUTE_ENTRY &&
+                tmp_map.size() == 0)
+            {
+                auto ptr_owner_str = g_redisRestoreClient->hget(key, "owner");
+                if (ptr_owner_str != NULL)
+                {
+                    SET_OBJ_OWNER(*ptr_owner_str);
+                }
+
+                std::string fvStr = joinOrderedFieldValues(attr_map);
+                std::string attrFvStr = ATTR2OID_PREFIX + fvStr;
+                auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+
+                if (oid_map.size() == 0)
+                {
+                    UNSET_OBJ_OWNER();
+                    SWSS_LOG_ERROR("RESTORE_DB: generic set key: %s, %s:%s, failed to find reverse map of %s ",
+                            key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str(), attrFvStr.c_str());
+                    return SAI_STATUS_ITEM_NOT_FOUND;
+                }
+
+                std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + key;
+                auto default_attr_map = g_redisRestoreClient->hgetallordered(defaultKey);
+
+                if (default_attr_map.size() == 0)
+                {
+                    // attribute changed from the original create, save the default mapping.
+                    // Here we assume no need to save default mapping for route/neighbor/fdb, double check!
+                    g_redisRestoreClient->hmset(defaultKey, attr_map);
+                    g_redisRestoreClient->hset(DEFAULT_ATTR2OID_PREFIX + fvStr, key, "NULL");
+                }
+
+                // Clean old attributes to key mapping.
+                g_redisRestoreClient->hdel(attrFvStr, key);
+
+                // Update or insert the attribute value and attributes to OID map
+                attr_map[fvField(fv)] = fvValue(fv);
+
+                fvStr = joinOrderedFieldValues(attr_map);
+                attrFvStr = ATTR2OID_PREFIX + fvStr;
+                g_redisRestoreClient->hset(attrFvStr, key, "NULL");
+                SWSS_LOG_DEBUG("RESTORE_DB: generic set key: %s, %s:%s",
+                        key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
+                UNSET_OBJ_OWNER();
+            }
+        }
+        else
+        {
+            // For objects created by ASIC/SDK/LibSAI, they will reach here.
+            // Add an entry in DEFAULT_OBJ_PREFIX table.
+            g_redisRestoreClient->hset(DEFAULT_OBJ_PREFIX + key, fvField(fv), fvValue(fv));
+        }
+        // Update the attribute in key to attributes map
+        g_redisRestoreClient->hset(OID2ATTR_PREFIX + key, fvField(fv), fvValue(fv));
+    }
+
     if (g_record)
     {
         recordLine("s|" + key + "|" + joinFieldValues(entry));
     }
-
     g_asicState->set(key, entry, "set");
-
     return SAI_STATUS_SUCCESS;
 }
 

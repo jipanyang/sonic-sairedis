@@ -144,6 +144,63 @@ std::string joinFieldValues(
     return ss.str();
 }
 
+std::string joinOrderedFieldValues(
+        _In_ const std::vector<swss::FieldValueTuple> &values)
+{
+    SWSS_LOG_ENTER();
+
+    std::map<std::string, std::string> map;
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        const std::string &str_attr_id = fvField(values[i]);
+        const std::string &str_attr_value = fvValue(values[i]);
+        map[str_attr_id] = str_attr_value;
+    }
+
+    std::stringstream ss;
+    auto it = map.begin();
+    while (it != map.end())
+    {
+        const std::string &str_attr_id = it->first;
+        const std::string &str_attr_value = it->second;
+
+        if(it != map.begin())
+        {
+            ss << "|";
+        }
+
+        ss << str_attr_id << "=" << str_attr_value;
+        it++;
+    }
+
+    return ss.str();
+}
+
+
+std::string joinOrderedFieldValues(
+        _In_ const std::map<std::string, std::string> &map)
+{
+    SWSS_LOG_ENTER();
+
+    std::stringstream ss;
+    auto it = map.begin();
+    while (it != map.end())
+    {
+        const std::string &str_attr_id = it->first;
+        const std::string &str_attr_value = it->second;
+
+        if(it != map.begin())
+        {
+            ss << "|";
+        }
+
+        ss << str_attr_id << "=" << str_attr_value;
+        it++;
+    }
+
+    return ss.str();
+}
+
 sai_status_t setRecordingOutputDir(
         _In_ const sai_attribute_t &attr)
 {

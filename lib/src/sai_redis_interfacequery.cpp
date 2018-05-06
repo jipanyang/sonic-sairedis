@@ -21,6 +21,12 @@ std::shared_ptr<swss::ConsumerTable>        g_redisGetConsumer;
 std::shared_ptr<swss::NotificationConsumer> g_redisNotifications;
 std::shared_ptr<swss::RedisClient>          g_redisClient;
 
+std::shared_ptr<swss::DBConnector>          restoreDb;
+std::shared_ptr<swss::RedisClient>          g_redisRestoreClient;
+
+bool g_idempotent = true;
+std::string g_objectOwner = "";
+
 void clear_local_state()
 {
     SWSS_LOG_ENTER();
@@ -121,6 +127,9 @@ sai_status_t sai_api_initialize(
     g_redisGetConsumer   = std::make_shared<swss::ConsumerTable>(g_db.get(), "GETRESPONSE");
     g_redisNotifications = std::make_shared<swss::NotificationConsumer>(g_dbNtf.get(), "NOTIFICATIONS");
     g_redisClient        = std::make_shared<swss::RedisClient>(g_db.get());
+
+    restoreDb            = std::make_shared<swss::DBConnector>(RESTORE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
+    g_redisRestoreClient = std::make_shared<swss::RedisClient>(restoreDb.get());
 
     clear_local_state();
 
