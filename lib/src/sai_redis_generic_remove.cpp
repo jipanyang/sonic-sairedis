@@ -45,13 +45,16 @@ sai_status_t internal_redis_generic_remove(
                     auto ptr_owner_str = g_redisRestoreClient->hget(key, "owner");
                     if (ptr_owner_str != NULL)
                     {
+                        // object owner to be used in ATTR2OID_PREFIX and DEFAULT_ATTR2OID_PREFIX
                         SET_OBJ_OWNER(*ptr_owner_str);
+                        // Delete the owner info
+                        g_redisRestoreClient->del(key);
                     }
 
                     std::string attrFvStr = ATTR2OID_PREFIX + joinOrderedFieldValues(attr_map);
-                    auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+                    auto exist = g_redisRestoreClient->exists(attrFvStr);
 
-                    if (oid_map.size() == 0)
+                    if (exist == 0)
                     {
                         UNSET_OBJ_OWNER();
                         SWSS_LOG_ERROR("RESTORE_DB: generic remove key: %s failed to find ATTR2OID mapping for",
@@ -67,8 +70,8 @@ sai_status_t internal_redis_generic_remove(
                     if (default_attr_map.size() > 0)
                     {
                         attrFvStr = DEFAULT_ATTR2OID_PREFIX + joinOrderedFieldValues(default_attr_map);
-                        oid_map = g_redisRestoreClient->hgetall(attrFvStr);
-                        if (oid_map.size() == 0)
+                        exist = g_redisRestoreClient->exists(attrFvStr);
+                        if (exist == 0)
                         {
                             UNSET_OBJ_OWNER();
                             SWSS_LOG_ERROR("RESTORE_DB: generic remove key: %s failed to find DEFAULT_ATTR2OID mapping for",
@@ -78,8 +81,6 @@ sai_status_t internal_redis_generic_remove(
                         g_redisRestoreClient->del(attrFvStr);
                         // Assuming no need to save default mapping for route/neighbor/fdb, double check!
                         g_redisRestoreClient->del(defaultKey);
-                        // Also delete the owner info
-                        g_redisRestoreClient->del(key);
                     }
                     UNSET_OBJ_OWNER();
                 }

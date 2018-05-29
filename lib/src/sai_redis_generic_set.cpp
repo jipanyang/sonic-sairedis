@@ -69,13 +69,13 @@ sai_status_t internal_redis_generic_set(
 
             // If it is default object created by libsai, don't check reverse mapping.
             std::string defaultObjKey = DEFAULT_OBJ_PREFIX + key;
-            auto tmp_map = g_redisRestoreClient->hgetall(defaultObjKey);
+            auto default_exist = g_redisRestoreClient->exists(defaultObjKey);
 
             // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
             if (object_type != SAI_OBJECT_TYPE_FDB_ENTRY &&
                 object_type != SAI_OBJECT_TYPE_NEIGHBOR_ENTRY &&
                 object_type != SAI_OBJECT_TYPE_ROUTE_ENTRY &&
-                tmp_map.size() == 0)
+                default_exist == 0)
             {
                 auto ptr_owner_str = g_redisRestoreClient->hget(key, "owner");
                 if (ptr_owner_str != NULL)
@@ -85,29 +85,27 @@ sai_status_t internal_redis_generic_set(
 
                 std::string fvStr = joinOrderedFieldValues(attr_map);
                 std::string attrFvStr = ATTR2OID_PREFIX + fvStr;
-                auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
 
-                if (oid_map.size() == 0)
+                auto oid_exist = g_redisRestoreClient->exists(attrFvStr);
+                if (oid_exist == 0)
                 {
                     UNSET_OBJ_OWNER();
                     SWSS_LOG_ERROR("RESTORE_DB: generic set key: %s, %s:%s, failed to find reverse map of %s ",
                             key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str(), attrFvStr.c_str());
                     return SAI_STATUS_ITEM_NOT_FOUND;
                 }
+                // Clean old attributes to key mapping.
+                g_redisRestoreClient->hdel(attrFvStr, key);
 
                 std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + key;
-                auto default_attr_map = g_redisRestoreClient->hgetallordered(defaultKey);
-
-                if (default_attr_map.size() == 0)
+                oid_exist = g_redisRestoreClient->exists(defaultKey);
+                if (oid_exist == 0)
                 {
                     // attribute changed from the original create, save the default mapping.
                     // Here we assume no need to save default mapping for route/neighbor/fdb, double check!
                     g_redisRestoreClient->hmset(defaultKey, attr_map);
                     g_redisRestoreClient->hset(DEFAULT_ATTR2OID_PREFIX + fvStr, key, "NULL");
                 }
-
-                // Clean old attributes to key mapping.
-                g_redisRestoreClient->hdel(attrFvStr, key);
 
                 // Update or insert the attribute value and attributes to OID map
                 attr_map[fvField(fv)] = fvValue(fv);
@@ -124,10 +122,12 @@ sai_status_t internal_redis_generic_set(
         {
             // For objects created by ASIC/SDK/LibSAI, they will reach here.
             // Add an entry in DEFAULT_OBJ_PREFIX table.
+            // It is an indication that this object is not created by orchagent.
+            // Only the first attribute set is logged.
             g_redisRestoreClient->hset(DEFAULT_OBJ_PREFIX + key, fvField(fv), fvValue(fv));
         }
         // Update the attribute in key to attributes map
-        g_redisRestoreClient->hset(OID2ATTR_PREFIX + key, fvField(fv), fvValue(fv));
+        g_redisRestoreClient->hset(restoreKey, fvField(fv), fvValue(fv));
     }
 
     if (g_record)
