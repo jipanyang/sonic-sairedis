@@ -29,6 +29,7 @@ extern "C" {
 #define ATTR2OID_PREFIX    ("ATTR2OID_" + (g_objectOwner))
 #define OID2ATTR_PREFIX    "OID2ATTR_"
 
+#define OBJ_OWNER_PREFIX   "OBJ_OWNER_"
 /*
  * For certain type of object, multiple objects may be created with the exact
  * same atrributes. The macro is to specify owner of the objects so they may be
@@ -55,11 +56,6 @@ extern bool g_idempotent;
  * For most of the objects, it should be empty.
  */
 extern std::string g_objectOwner;
-
-
-/* TODO: The in memory mapping for quick lookup:  ATTR2OID, OID2ATTR */
-// std::unordered_map<std::string, std::string> attr2oid;
-// std::unordered_map<std::string, std::string> oid2attr;
 
 typedef enum _sai_redis_notify_syncd_t
 {

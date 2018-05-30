@@ -57,6 +57,27 @@ extern std::string joinOrderedFieldValues(
         _In_ const std::vector<swss::FieldValueTuple> &values);
 extern std::string joinOrderedFieldValues(
         _In_ const std::map<std::string, std::string> &map);
+
+/* cache layer for attributes to OID lookup */
+extern void redis_attr_to_oid_map_restore(void);
+extern sai_object_id_t redis_attr_to_oid_map_lookup(
+        _In_ const std::string &attrFvStr);
+extern void redis_attr_to_oid_map_insert(
+        _In_ const std::string &attrFvStr, sai_object_id_t object_id);
+extern void redis_attr_to_oid_map_erase(
+        _In_ const std::string &attrFvStr);
+
+
+/* cache layer for OID to owner lookup */
+extern void redis_oid_to_owner_map_restore(void);
+extern std::string redis_oid_to_owner_map_lookup(
+        _In_ const std::string &key);
+extern void redis_oid_to_owner_map_insert(
+        _In_ const std::string &key,
+        _In_ const std::string &owner);
+extern void redis_oid_to_owner_map_erase(
+        _In_ const std::string &key);
+
 // other global declarations
 
 extern volatile bool g_record;

@@ -77,17 +77,16 @@ sai_status_t internal_redis_generic_set(
                 object_type != SAI_OBJECT_TYPE_ROUTE_ENTRY &&
                 default_exist == 0)
             {
-                auto ptr_owner_str = g_redisRestoreClient->hget(key, "owner");
-                if (ptr_owner_str != NULL)
-                {
-                    SET_OBJ_OWNER(*ptr_owner_str);
-                }
+                auto owner_str = redis_oid_to_owner_map_lookup(key);
+                SET_OBJ_OWNER(owner_str);
 
                 std::string fvStr = joinOrderedFieldValues(attr_map);
                 std::string attrFvStr = ATTR2OID_PREFIX + fvStr;
 
-                auto oid_exist = g_redisRestoreClient->exists(attrFvStr);
-                if (oid_exist == 0)
+                sai_object_id_t objectId;
+                objectId = redis_attr_to_oid_map_lookup(attrFvStr);
+
+                if (objectId == SAI_NULL_OBJECT_ID)
                 {
                     UNSET_OBJ_OWNER();
                     SWSS_LOG_ERROR("RESTORE_DB: generic set key: %s, %s:%s, failed to find reverse map of %s ",
@@ -96,25 +95,29 @@ sai_status_t internal_redis_generic_set(
                 }
                 // Clean old attributes to key mapping.
                 g_redisRestoreClient->hdel(attrFvStr, key);
+                redis_attr_to_oid_map_erase(attrFvStr);
 
+                // Save default attributes to OID mapping if not done yet
                 std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + key;
-                oid_exist = g_redisRestoreClient->exists(defaultKey);
+                auto oid_exist = g_redisRestoreClient->exists(defaultKey);
                 if (oid_exist == 0)
                 {
                     // attribute changed from the original create, save the default mapping.
                     // Here we assume no need to save default mapping for route/neighbor/fdb, double check!
                     g_redisRestoreClient->hmset(defaultKey, attr_map);
                     g_redisRestoreClient->hset(DEFAULT_ATTR2OID_PREFIX + fvStr, key, "NULL");
+                    redis_attr_to_oid_map_insert(DEFAULT_ATTR2OID_PREFIX + fvStr, objectId);
                 }
 
                 // Update or insert the attribute value and attributes to OID map
                 attr_map[fvField(fv)] = fvValue(fv);
-
                 fvStr = joinOrderedFieldValues(attr_map);
                 attrFvStr = ATTR2OID_PREFIX + fvStr;
                 g_redisRestoreClient->hset(attrFvStr, key, "NULL");
+                redis_attr_to_oid_map_insert(attrFvStr, objectId);
                 SWSS_LOG_DEBUG("RESTORE_DB: generic set key: %s, %s:%s",
                         key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
+
                 UNSET_OBJ_OWNER();
             }
         }

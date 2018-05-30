@@ -147,6 +147,12 @@ sai_status_t sai_api_initialize(
 
     g_apiInitialized = true;
 
+    if (g_idempotent)
+    {
+        redis_oid_to_owner_map_restore();
+        redis_attr_to_oid_map_restore();
+    }
+
     return SAI_STATUS_SUCCESS;
 }
 

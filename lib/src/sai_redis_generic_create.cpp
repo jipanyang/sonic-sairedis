@@ -198,6 +198,135 @@ void redis_free_virtual_object_id(
     }
 }
 
+/* The in memory mapping for quick lookup:  ATTR2OID and DEFAULT_ATTR2OID */
+static std::unordered_map<std::string, sai_object_id_t> attr2oid;
+
+/*
+ * The in memory mapping for quick lookup:
+ * (str_object_type + ":" + serialized_object_id) to owner
+ */
+static std::unordered_map<std::string, std::string> oid2owner;
+
+sai_object_id_t redis_attr_to_oid_db_lookup(
+     _In_ const std::string &attrFvStr)
+{
+    auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+    if (oid_map.size() > 1)
+    {
+        SWSS_LOG_ERROR("RESTORE: db lookup key: Fields: %s has %d keys",
+                attrFvStr.c_str(), oid_map.size());
+        return SAI_NULL_OBJECT_ID;
+    }
+    else if (oid_map.size() == 1)
+    {
+        for (auto &kv: oid_map)
+        {
+            sai_object_id_t objectId;
+
+            //key is in format of str_object_type + ":" + serialized_object_id
+            auto key = kv.first;
+            size_t found = key.find(':');
+            if (found != std::string::npos)
+            {
+                sai_deserialize_object_id(key.substr(found+1), objectId);
+                SWSS_LOG_INFO("RESTORE: db lookup key: %s, fields: %s", key.c_str(), attrFvStr.c_str());
+                return objectId;
+            }
+            else
+            {
+                SWSS_LOG_ERROR("RESTORE: Invalid OID: %s for fields %s", key.c_str(), attrFvStr.c_str());
+                return SAI_NULL_OBJECT_ID;
+            }
+        }
+    }
+    SWSS_LOG_INFO("RESTORE: db lookup return empty for fields: %s", attrFvStr.c_str());
+    return SAI_NULL_OBJECT_ID;
+}
+
+void redis_attr_to_oid_map_restore(void)
+{
+    sai_object_id_t object_id;
+
+    for (const auto &attrFvStr: g_redisRestoreClient->keys(DEFAULT_ATTR2OID_PREFIX + "*"))
+    {
+        object_id = redis_attr_to_oid_db_lookup(attrFvStr);
+        if (object_id != SAI_NULL_OBJECT_ID)
+        {
+            attr2oid[attrFvStr] = object_id;
+        }
+    }
+
+    for (const auto &attrFvStr: g_redisRestoreClient->keys(ATTR2OID_PREFIX + "*"))
+    {
+        object_id = redis_attr_to_oid_db_lookup(attrFvStr);
+        if (object_id != SAI_NULL_OBJECT_ID)
+        {
+            attr2oid[attrFvStr] = object_id;
+        }
+    }
+}
+
+sai_object_id_t redis_attr_to_oid_map_lookup(
+    _In_ const std::string &attrFvStr)
+{
+    if(attr2oid.find(attrFvStr) == attr2oid.end())
+    {
+        return SAI_NULL_OBJECT_ID;
+    }
+
+    return attr2oid[attrFvStr];
+}
+
+void redis_attr_to_oid_map_insert(
+    _In_ const std::string &attrFvStr, sai_object_id_t object_id)
+{
+    attr2oid[attrFvStr] = object_id;
+}
+
+void redis_attr_to_oid_map_erase(
+    _In_ const std::string &attrFvStr)
+{
+    attr2oid.erase(attrFvStr);
+}
+
+void redis_oid_to_owner_map_restore(void)
+{
+    for (const auto &ownerKey: g_redisRestoreClient->keys(OBJ_OWNER_PREFIX + std::string("*")))
+    {
+        auto ptr_owner_str = g_redisRestoreClient->hget(ownerKey, "owner");
+        if (ptr_owner_str != NULL)
+        {
+            auto key = ownerKey.substr(strlen(OBJ_OWNER_PREFIX));
+            oid2owner[key] = (*ptr_owner_str);
+            SWSS_LOG_INFO("RESTORE: owner map restore: %s, owner: %s", key.c_str(), ptr_owner_str->c_str());
+        }
+    }
+}
+
+// key = str_object_type + ":" + serialized_object_id;
+std::string redis_oid_to_owner_map_lookup(
+    _In_ const std::string &key)
+{
+    if(oid2owner.find(key) == oid2owner.end())
+    {
+        return "";
+    }
+    return oid2owner[key];
+}
+
+void redis_oid_to_owner_map_insert(
+    _In_ const std::string &key,
+    _In_ const std::string &owner)
+{
+    oid2owner[key] = owner;
+}
+
+void redis_oid_to_owner_map_erase(
+    _In_ const std::string &key)
+{
+    oid2owner.erase(key);
+}
+
 // If same attributes provided for object create, the original OID should be returned
 // without generating new OID and sending create request down.
 sai_status_t redis_idempotent_create(
@@ -248,40 +377,17 @@ sai_status_t redis_idempotent_create(
     else
     {
         std::string attrFvStr = ATTR2OID_PREFIX + fvStr;
-        auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
 
-        if (oid_map.size() == 0)
+        *object_id = redis_attr_to_oid_map_lookup(attrFvStr);
+        if (*object_id == SAI_NULL_OBJECT_ID)
         {
-            // Check default attributes OID mapping table.
             attrFvStr = DEFAULT_ATTR2OID_PREFIX + fvStr;
-            oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+            *object_id = redis_attr_to_oid_map_lookup(attrFvStr);
         }
-
-        if (oid_map.size() > 1)
+        if (*object_id != SAI_NULL_OBJECT_ID)
         {
-            SWSS_LOG_ERROR("RESTORE: generic create key: Fields: %s has %d keys",
-                    attrFvStr.c_str(), oid_map.size());
-            return SAI_STATUS_FAILURE;
-        }
-        else if (oid_map.size() == 1)
-        {
-            for (auto &kv: oid_map)
-            {
-                sai_object_id_t objectIdKey;
-
-                key = kv.first;
-
-                if (key.find(str_object_type) != 0)
-                {
-                    SWSS_LOG_ERROR("RESTORE: Invalid OID type: %s, expecting %s", key.c_str(), str_object_type.c_str());
-                    return SAI_STATUS_INVALID_OBJECT_TYPE;
-                }
-
-                sai_deserialize_object_id(key.substr(str_object_type.size()+1), objectIdKey);
-
-                *object_id = objectIdKey;
-            }
-            SWSS_LOG_INFO("RESTORE: skipping generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+            SWSS_LOG_INFO("RESTORE: skipping generic create key: %s:%s, fields: %s",
+                    str_object_type.c_str(), sai_serialize_object_id(*object_id).c_str(), fvStr.c_str());
             return SAI_STATUS_SUCCESS;
         }
     }
@@ -311,7 +417,7 @@ sai_status_t redis_idempotent_create(
 
     g_asicState->set(key, entry, "create");
 
-    SWSS_LOG_DEBUG("RESTORE_DB: generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+    SWSS_LOG_DEBUG("RESTORE: generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
     if (object_type == SAI_OBJECT_TYPE_SWITCH)
     {
         // Attributes for switch create contains running time function pointers which will be changed after restart
@@ -319,11 +425,13 @@ sai_status_t redis_idempotent_create(
     }
     else
     {
+        redis_attr_to_oid_map_insert(ATTR2OID_PREFIX + fvStr, *object_id);
         g_redisRestoreClient->hset(ATTR2OID_PREFIX + fvStr, key, "NULL");
         g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry);
         if (g_objectOwner != "")
         {
-            g_redisRestoreClient->hset(key, "owner", g_objectOwner);
+            redis_oid_to_owner_map_insert(key, g_objectOwner);
+            g_redisRestoreClient->hset(OBJ_OWNER_PREFIX + key, "owner", g_objectOwner);
         }
     }
 
