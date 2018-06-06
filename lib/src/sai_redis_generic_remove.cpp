@@ -90,13 +90,15 @@ sai_status_t internal_redis_generic_remove(
             // Here ASIC db is being checked for the existence of the object.
             // For those default objects from ASIC, no entry for them in
             // restore DB if there is no set history on it.
-            auto attr_unordered_map = g_redisClient->hgetall(key);
-            if (attr_unordered_map.size() == 0)
+            // Each orchagent actually already skipped the default object removal,
+            // Double check here anyway.
+            auto default_exist = g_redisClient->exists("ASIC_STATE:" + key);
+            if (default_exist == 0)
             {
                 // Potentially there could be race condition, a sequnce of remove/create/remove for same object.
                 // The second remove may arrives here just after first remove is processed by syncd.
                 // Ignoring such case with assumption that feedback path implementation is comming.
-                SWSS_LOG_DEBUG("RESTORE_DB: generic remove key: %s, already done in ASIC DB", key.c_str());
+                SWSS_LOG_INFO("RESTORE_DB: generic remove key: %s, already done in ASIC DB", key.c_str());
                 return SAI_STATUS_SUCCESS;
             }
         }
