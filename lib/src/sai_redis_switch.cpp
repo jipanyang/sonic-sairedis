@@ -264,6 +264,8 @@ sai_status_t redis_set_switch_attribute(
 
             case SAI_REDIS_SWITCH_ATTR_USE_TEMP_VIEW:
                 g_useTempView = attr->value.booldata;
+                //syncd view comparision is not compatible with libsairedis idempotence, for now.
+                g_idempotent = !g_useTempView;
                 return SAI_STATUS_SUCCESS;
 
             case SAI_REDIS_SWITCH_ATTR_USE_PIPELINE:
