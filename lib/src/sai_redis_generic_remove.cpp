@@ -20,7 +20,10 @@ sai_status_t internal_redis_generic_remove(
         std::string restoreKey;
 
         restoreKey = OID2ATTR_PREFIX + key;
-        auto attr_map = g_redisRestoreClient->hgetallordered(restoreKey);
+
+        std::map<std::string, std::string> attr_map;
+        g_redisRestoreClient->hgetall(restoreKey, std::inserter(attr_map, attr_map.end()));
+
         if (attr_map.size() > 0)
         {
             SWSS_LOG_DEBUG("RESTORE_DB: generic remove key: %s", key.c_str());
@@ -64,7 +67,10 @@ sai_status_t internal_redis_generic_remove(
 
                     // Also check if there is default attributes OID mapping for this object
                     std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + key;
-                    auto default_attr_map = g_redisRestoreClient->hgetallordered(defaultKey);
+
+                    std::map<std::string, std::string> default_attr_map;
+                    g_redisRestoreClient->hgetall(defaultKey, std::inserter(default_attr_map, default_attr_map.end()));
+
                     if (default_attr_map.size() > 0)
                     {
                         attrFvStr = DEFAULT_ATTR2OID_PREFIX + joinOrderedFieldValues(default_attr_map);

@@ -427,7 +427,7 @@ sai_status_t redis_idempotent_create(
     {
         redis_attr_to_oid_map_insert(ATTR2OID_PREFIX + fvStr, *object_id);
         g_redisRestoreClient->hset(ATTR2OID_PREFIX + fvStr, key, "NULL");
-        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry);
+        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry.begin(), entry.end());
         if (g_objectOwner != "")
         {
             redis_oid_to_owner_map_insert(key, g_objectOwner);
@@ -484,7 +484,7 @@ sai_status_t internal_redis_generic_create(
             return SAI_STATUS_SUCCESS;
         }
 
-        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry);
+        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key,  entry.begin(), entry.end());
     }
 
     if (g_record)

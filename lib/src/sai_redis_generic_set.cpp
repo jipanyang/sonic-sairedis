@@ -46,7 +46,8 @@ sai_status_t internal_redis_generic_set(
         }
 
         std::string restoreKey = OID2ATTR_PREFIX + key;
-        auto attr_map = g_redisRestoreClient->hgetallordered(restoreKey);
+        std::map<std::string, std::string> attr_map;
+        g_redisRestoreClient->hgetall(restoreKey, std::inserter(attr_map, attr_map.end()));
 
         if (attr_map.size() > 0)
         {
@@ -104,7 +105,7 @@ sai_status_t internal_redis_generic_set(
                 {
                     // attribute changed from the original create, save the default mapping.
                     // Here we assume no need to save default mapping for route/neighbor/fdb, double check!
-                    g_redisRestoreClient->hmset(defaultKey, attr_map);
+                    g_redisRestoreClient->hmset(defaultKey, attr_map.begin(), attr_map.end());
                     g_redisRestoreClient->hset(DEFAULT_ATTR2OID_PREFIX + fvStr, key, "NULL");
                     redis_attr_to_oid_map_insert(DEFAULT_ATTR2OID_PREFIX + fvStr, objectId);
                 }
