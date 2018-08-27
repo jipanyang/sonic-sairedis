@@ -405,9 +405,7 @@ sai_status_t redis_idempotent_create(
     }
 
     std::string serialized_object_id = sai_serialize_object_id(*object_id);
-
     key = str_object_type + ":" + serialized_object_id;
-
     SWSS_LOG_DEBUG("generic create key: %s, fields: %lu", key.c_str(), entry.size());
 
     if (g_record)

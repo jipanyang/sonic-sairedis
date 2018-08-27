@@ -22,6 +22,7 @@ sai_status_t internal_redis_generic_set(
 
     SWSS_LOG_DEBUG("generic set key: %s, fields: %lu", key.c_str(), entry.size());
 
+    // TODO:  move the process to a separate file
     if (g_idempotent)
     {
         // For set, there is only one entry.
@@ -31,7 +32,7 @@ sai_status_t internal_redis_generic_set(
         {
             auto ptr_object_id_str = g_redisRestoreClient->hget("SWITCH", fvField(fv));
 
-            if (ptr_object_id_str == NULL || fvValue(fv) == *ptr_object_id_str)
+            if (ptr_object_id_str != NULL && fvValue(fv) == *ptr_object_id_str)
             {
                 SWSS_LOG_INFO("RESTORE: skipping generic set key: %s, %s:%s",
                         key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
