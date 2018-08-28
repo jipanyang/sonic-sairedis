@@ -44,7 +44,10 @@ libsairedis_la_SOURCES = \
 			 sai_redis_generic_get.cpp \
 			 sai_redis_notifications.cpp \
 			 sai_redis_record.cpp \
-			 sai_redis_generic_get_stats.cpp
+			 sai_redis_generic_get_stats.cpp \
+			 sai_redis_idempotent.cpp \
+			 sai_redis_idempotent.h \
+			 sai_redis_idempotent_internal.h
 
 libsairedis_la_CPPFLAGS = $(DBGFLAGS) $(AM_CPPFLAGS) $(CFLAGS_COMMON)
 libsairedis_la_LIBADD = -lhiredis -lswsscommon

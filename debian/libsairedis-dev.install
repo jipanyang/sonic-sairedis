@@ -1,1 +1,2 @@
 lib/inc/sairedis.h usr/include/sai
+lib/inc/sai_redis_idempotent.h usr/include/sai

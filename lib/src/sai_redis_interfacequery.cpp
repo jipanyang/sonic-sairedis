@@ -1,5 +1,6 @@
 #include "sai_redis.h"
 #include "sairedis.h"
+#include "sai_redis_idempotent_internal.h"
 
 #include "swss/selectableevent.h"
 #include <string.h>

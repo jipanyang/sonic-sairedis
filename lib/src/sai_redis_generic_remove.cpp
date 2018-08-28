@@ -1,5 +1,5 @@
 #include "sai_redis.h"
-#include "sairedis.h"
+#include "sai_redis_idempotent_internal.h"
 #include "meta/sai_serialize.h"
 #include "meta/saiattributelist.h"
 
@@ -17,103 +17,14 @@ sai_status_t internal_redis_generic_remove(
 
     if (g_idempotent)
     {
-        std::string restoreKey;
-
-        restoreKey = OID2ATTR_PREFIX + key;
-
-        std::map<std::string, std::string> attr_map;
-        g_redisRestoreClient->hgetall(restoreKey, std::inserter(attr_map, attr_map.end()));
-
-        if (attr_map.size() > 0)
-        {
-            SWSS_LOG_DEBUG("RESTORE_DB: generic remove key: %s", key.c_str());
-            g_redisRestoreClient->del(restoreKey);
-
-            // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
-            // For object with key type of sai_object_id_t, there is reverse mapping from
-            // attributes to OID.
-            if (object_type != SAI_OBJECT_TYPE_FDB_ENTRY &&
-                object_type != SAI_OBJECT_TYPE_NEIGHBOR_ENTRY &&
-                object_type != SAI_OBJECT_TYPE_ROUTE_ENTRY)
-            {
-                // If it is default object created by libsai, don't check reverse mapping.
-                std::string defaultObjKey = DEFAULT_OBJ_PREFIX + key;
-                auto exist = g_redisRestoreClient->exists(defaultObjKey);
-                if (exist > 0)
-                {
-                    g_redisRestoreClient->del(defaultObjKey);
-                }
-                else
-                {
-                    auto owner_str = redis_oid_to_owner_map_lookup(key);
-                    if (owner_str != "")
-                    {
-                        SET_OBJ_OWNER(owner_str);
-                        g_redisRestoreClient->del(OBJ_OWNER_PREFIX + key);
-                        redis_oid_to_owner_map_erase(key);
-                    }
-
-                    std::string attrFvStr = ATTR2OID_PREFIX + joinOrderedFieldValues(attr_map);
-                    sai_object_id_t object_id = redis_attr_to_oid_map_lookup(attrFvStr);
-                    if (object_id == SAI_NULL_OBJECT_ID)
-                    {
-                        UNSET_OBJ_OWNER();
-                        SWSS_LOG_ERROR("RESTORE_DB: generic remove key: %s failed to find ATTR2OID mapping for",
-                                key.c_str(), attrFvStr.c_str());
-                        return SAI_STATUS_ITEM_NOT_FOUND;
-                    }
-                    g_redisRestoreClient->del(attrFvStr);
-                    redis_attr_to_oid_map_erase(attrFvStr);
-
-                    // Also check if there is default attributes OID mapping for this object
-                    std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + key;
-
-                    std::map<std::string, std::string> default_attr_map;
-                    g_redisRestoreClient->hgetall(defaultKey, std::inserter(default_attr_map, default_attr_map.end()));
-
-                    if (default_attr_map.size() > 0)
-                    {
-                        attrFvStr = DEFAULT_ATTR2OID_PREFIX + joinOrderedFieldValues(default_attr_map);
-                        object_id = redis_attr_to_oid_map_lookup(attrFvStr);
-                        if (object_id == SAI_NULL_OBJECT_ID)
-                        {
-                            UNSET_OBJ_OWNER();
-                            SWSS_LOG_ERROR("RESTORE_DB: generic remove key: %s failed to find DEFAULT_ATTR2OID mapping for",
-                                    key.c_str(), attrFvStr.c_str());
-                            return SAI_STATUS_ITEM_NOT_FOUND;
-                        }
-                        g_redisRestoreClient->del(attrFvStr);
-                        redis_attr_to_oid_map_erase(attrFvStr);
-                        // Assuming no need to save default mapping for route/neighbor/fdb, double check!
-                        g_redisRestoreClient->del(defaultKey);
-                    }
-                    UNSET_OBJ_OWNER();
-                }
-            }
-        }
-        else
-        {
-            // Here ASIC db is being checked for the existence of the object.
-            // For those default objects from ASIC, no entry for them in
-            // restore DB if there is no set history on it.
-            // Each orchagent actually already skipped the default object removal,
-            // Double check here anyway.
-            auto default_exist = g_redisClient->exists("ASIC_STATE:" + key);
-            if (default_exist == 0)
-            {
-                // Potentially there could be race condition, a sequnce of remove/create/remove for same object.
-                // The second remove may arrives here just after first remove is processed by syncd.
-                // Ignoring such case with assumption that feedback path implementation is comming.
-                SWSS_LOG_INFO("RESTORE_DB: generic remove key: %s, already done in ASIC DB", key.c_str());
-                return SAI_STATUS_SUCCESS;
-            }
-        }
+        return internal_redis_idempotent_remove(object_type, key);
     }
 
     if (g_record)
     {
         recordLine("r|" + key);
     }
+
     g_asicState->del(key, "remove");
 
     return SAI_STATUS_SUCCESS;

@@ -53,30 +53,6 @@ extern sai_status_t setRecordingOutputDir(
 extern void recordLine(std::string s);
 extern std::string joinFieldValues(
         _In_ const std::vector<swss::FieldValueTuple> &values);
-extern std::string joinOrderedFieldValues(
-        _In_ const std::vector<swss::FieldValueTuple> &values);
-extern std::string joinOrderedFieldValues(
-        _In_ const std::map<std::string, std::string> &map);
-
-/* cache layer for attributes to OID lookup */
-extern void redis_attr_to_oid_map_restore(void);
-extern sai_object_id_t redis_attr_to_oid_map_lookup(
-        _In_ const std::string &attrFvStr);
-extern void redis_attr_to_oid_map_insert(
-        _In_ const std::string &attrFvStr, sai_object_id_t object_id);
-extern void redis_attr_to_oid_map_erase(
-        _In_ const std::string &attrFvStr);
-
-
-/* cache layer for OID to owner lookup */
-extern void redis_oid_to_owner_map_restore(void);
-extern std::string redis_oid_to_owner_map_lookup(
-        _In_ const std::string &key);
-extern void redis_oid_to_owner_map_insert(
-        _In_ const std::string &key,
-        _In_ const std::string &owner);
-extern void redis_oid_to_owner_map_erase(
-        _In_ const std::string &key);
 
 // other global declarations
 
@@ -90,7 +66,6 @@ extern std::shared_ptr<swss::ProducerTable>         g_asicState;
 extern std::shared_ptr<swss::ConsumerTable>         g_redisGetConsumer;
 extern std::shared_ptr<swss::NotificationConsumer>  g_redisNotifications;
 extern std::shared_ptr<swss::RedisClient>           g_redisClient;
-extern std::shared_ptr<swss::RedisClient>           g_redisRestoreClient;
 
 extern std::mutex g_apimutex;
 
@@ -136,7 +111,8 @@ const sai_attribute_t* redis_get_attribute_by_id(
         _In_ const sai_attribute_t *attr_list);
 
 sai_object_id_t redis_create_virtual_object_id(
-        _In_ sai_object_type_t object_type);
+        _In_ sai_object_type_t object_type,
+        _In_ sai_object_id_t switch_id);
 
 void translate_rid_to_vid(
         _In_ sai_object_type_t object_type,
