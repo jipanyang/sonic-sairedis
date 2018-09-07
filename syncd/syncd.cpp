@@ -1185,7 +1185,7 @@ sai_status_t handle_generic(
                     /*
                      * When we creating switch, then switch_id parameter is
                      * ignored, but we can't convert it using vid to rid map,
-                     * since rid don't exist yet, so skip translate for switch,
+                     * since rid doesn't exist yet, so skip translate for switch,
                      * but use translate for all other objects.
                      */
 
@@ -1997,7 +1997,7 @@ void on_switch_create_in_init_view(
         if (attr == NULL)
         {
             /*
-             * This is ok, attribute don't exists, so assumption is empty string.
+             * This is ok, attribute doesn't exist, so assumption is empty string.
              */
         }
         else
@@ -2862,27 +2862,27 @@ void printUsage()
     SWSS_LOG_ENTER();
 
     std::cout << "Usage: syncd [-N] [-d] [-p profile] [-i interval] [-t [cold|warm|fast]] [-h] [-u] [-S]" << std::endl;
-    std::cout << "    -N --nocounters:" << std::endl;
+    std::cout << "    -N --nocounters" << std::endl;
     std::cout << "        Disable counter thread" << std::endl;
-    std::cout << "    -d --diag:" << std::endl;
+    std::cout << "    -d --diag" << std::endl;
     std::cout << "        Enable diagnostic shell" << std::endl;
-    std::cout << "    -p --profile profile:" << std::endl;
+    std::cout << "    -p --profile profile" << std::endl;
     std::cout << "        Provide profile map file" << std::endl;
-    std::cout << "    -i --countersInterval interval:" << std::endl;
+    std::cout << "    -i --countersInterval interval" << std::endl;
     std::cout << "        Provide counter thread interval" << std::endl;
-    std::cout << "    -t --startType type:" << std::endl;
+    std::cout << "    -t --startType type" << std::endl;
     std::cout << "        Specify cold|warm|fast start type" << std::endl;
-    std::cout << "    -u --useTempView type:" << std::endl;
+    std::cout << "    -u --useTempView:" << std::endl;
     std::cout << "        Use temporary view between init and apply" << std::endl;
     std::cout << "    -S --disableExitSleep" << std::endl;
     std::cout << "        Disable sleep when syncd crashes" << std::endl;
 #ifdef SAITHRIFT
-    std::cout << "    -r --rpcserver:"           << std::endl;
+    std::cout << "    -r --rpcserver"           << std::endl;
     std::cout << "        Enable rpcserver"      << std::endl;
-    std::cout << "    -m --portmap:"             << std::endl;
+    std::cout << "    -m --portmap"             << std::endl;
     std::cout << "        Specify port map file" << std::endl;
 #endif // SAITHRIFT
-    std::cout << "    -h --help:" << std::endl;
+    std::cout << "    -h --help" << std::endl;
     std::cout << "        Print out this message" << std::endl;
 }
 
