@@ -152,6 +152,7 @@ sai_status_t sai_api_initialize(
     {
         redis_oid_to_owner_map_restore();
         redis_attr_to_oid_map_restore();
+        redis_oid_to_attr_map_restore();
     }
 
     return SAI_STATUS_SUCCESS;

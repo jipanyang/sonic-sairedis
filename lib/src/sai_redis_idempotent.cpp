@@ -4,10 +4,10 @@
 #include "meta/sai_serialize.h"
 #include "meta/saiattributelist.h"
 
-extern std::shared_ptr<swss::RedisClient>          g_redisRestoreClient;
 /* The in memory mapping for quick lookup:  ATTR2OID and DEFAULT_ATTR2OID */
 static std::unordered_map<std::string, sai_object_id_t> attr2oid;
-
+/* The in memory mapping for quick lookup:  OID2ATTR and DEFAULT_OID2ATTR */
+static std::unordered_map<std::string, std::vector<swss::FieldValueTuple>> oid2attr;
 /*
  * The in memory mapping for quick lookup:
  * (str_object_type + ":" + serialized_object_id) to owner
@@ -17,7 +17,7 @@ static std::unordered_map<std::string, std::string> oid2owner;
 static sai_object_id_t redis_attr_to_oid_db_lookup(
      _In_ const std::string &attrFvStr)
 {
-    auto oid_map = g_redisRestoreClient->hgetall(attrFvStr);
+    auto oid_map = g_redisClient->hgetall(attrFvStr);
     if (oid_map.size() > 1)
     {
         SWSS_LOG_ERROR("RESTORE: db lookup key: Fields: %s has %d keys",
@@ -54,7 +54,7 @@ void redis_attr_to_oid_map_restore(void)
 {
     sai_object_id_t object_id;
 
-    for (const auto &attrFvStr: g_redisRestoreClient->keys(DEFAULT_ATTR2OID_PREFIX + "*"))
+    for (const auto &attrFvStr: g_redisClient->keys(DEFAULT_ATTR2OID_PREFIX + "*"))
     {
         object_id = redis_attr_to_oid_db_lookup(attrFvStr);
         if (object_id != SAI_NULL_OBJECT_ID)
@@ -63,7 +63,7 @@ void redis_attr_to_oid_map_restore(void)
         }
     }
 
-    for (const auto &attrFvStr: g_redisRestoreClient->keys(ATTR2OID_PREFIX + "*"))
+    for (const auto &attrFvStr: g_redisClient->keys(ATTR2OID_PREFIX + "*"))
     {
         object_id = redis_attr_to_oid_db_lookup(attrFvStr);
         if (object_id != SAI_NULL_OBJECT_ID)
@@ -98,9 +98,9 @@ static void redis_attr_to_oid_map_erase(
 
 void redis_oid_to_owner_map_restore(void)
 {
-    for (const auto &ownerKey: g_redisRestoreClient->keys(OBJ_OWNER_PREFIX + std::string("*")))
+    for (const auto &ownerKey : g_redisClient->keys(OBJ_OWNER_PREFIX + std::string("*")))
     {
-        auto ptr_owner_str = g_redisRestoreClient->hget(ownerKey, "owner");
+        auto ptr_owner_str = g_redisClient->hget(ownerKey, "owner");
         if (ptr_owner_str != NULL)
         {
             auto key = ownerKey.substr(strlen(OBJ_OWNER_PREFIX));
@@ -134,6 +134,55 @@ static void redis_oid_to_owner_map_erase(
     oid2owner.erase(key);
 }
 
+static inline std::vector<swss::FieldValueTuple> redis_oid_to_atrr_db_lookup(
+    _In_ const std::string &object_id_str)
+{
+    std::vector<swss::FieldValueTuple> values;
+    auto fvs = g_redisClient->hgetall(object_id_str);
+
+    for (auto &fv: fvs)
+    {
+        values.emplace_back(fv.first, fv.second);
+    }
+    return values;
+}
+
+void redis_oid_to_attr_map_restore(void)
+{
+    for (const auto &object_id_str : g_redisClient->keys(DEFAULT_OID2ATTR_PREFIX + std::string("*")))
+    {
+        oid2attr[object_id_str] = redis_oid_to_atrr_db_lookup(object_id_str);
+    }
+
+    for (const auto &object_id_str : g_redisClient->keys(OID2ATTR_PREFIX + std::string("*")))
+    {
+        oid2attr[object_id_str] = redis_oid_to_atrr_db_lookup(object_id_str);
+    }
+}
+
+static std::vector<swss::FieldValueTuple> redis_oid_to_attr_map_lookup(
+    _In_ const std::string object_id_str)
+{
+    if(oid2attr.find(object_id_str) == oid2attr.end())
+    {
+        return std::vector<swss::FieldValueTuple>();
+    }
+
+    return oid2attr[object_id_str];
+}
+
+static inline void redis_oid_to_attr_map_insert(
+    _In_ const std::string object_id_str,
+    _In_ const std::vector<swss::FieldValueTuple> &fvs)
+{
+    oid2attr[object_id_str] = fvs;
+}
+
+static inline void redis_oid_to_attr_map_erase(
+    _In_ const std::string object_id_str)
+{
+    oid2attr.erase(object_id_str);
+}
 
 // If same attributes provided for object create, the original OID should be returned
 // without generating new OID nor sending create request down.
@@ -171,14 +220,13 @@ sai_status_t redis_idempotent_create(
 
     if (object_type == SAI_OBJECT_TYPE_SWITCH)
     {
-        auto ptr_object_id_str = g_redisRestoreClient->hget("SWITCH", "switch_oid");
+        auto ptr_object_id_str = g_redisClient->hget("RESTORE_SWITCH", "switch_oid");
         if (ptr_object_id_str != NULL)
         {
             sai_deserialize_object_id(*ptr_object_id_str, *object_id);
 
-            key = str_object_type + ":" + *ptr_object_id_str;
-
-            SWSS_LOG_DEBUG("RESTORE: skipping generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
+            SWSS_LOG_DEBUG("RESTORE: skipping generic create key: %s:%s, fields: %s",
+                    str_object_type.c_str(), ptr_object_id_str->c_str(), fvStr.c_str());
             return SAI_STATUS_SUCCESS;
         }
     }
@@ -202,7 +250,6 @@ sai_status_t redis_idempotent_create(
 
     // on create vid is put in db by syncd
     *object_id = redis_create_virtual_object_id(object_type, switch_id);
-
     if (*object_id == SAI_NULL_OBJECT_ID)
     {
         SWSS_LOG_ERROR("failed to create %s, with switch id: %s",
@@ -221,32 +268,43 @@ sai_status_t redis_idempotent_create(
         recordLine("c|" + key + "|" + fvStr);
     }
 
-    g_asicState->set(key, entry, "create");
+    std::vector<swss::KeyOpFieldsValuesTuple> vkco;
+    std::vector<swss::FieldValueTuple> fvs;
 
     SWSS_LOG_DEBUG("RESTORE: generic create key: %s, fields: %s", key.c_str(), fvStr.c_str());
     if (object_type == SAI_OBJECT_TYPE_SWITCH)
     {
         // Attributes for switch create contains running time function pointers which will be changed after restart
-        g_redisRestoreClient->hset("SWITCH", "switch_oid", serialized_object_id);
+        fvs.emplace_back("switch_oid", serialized_object_id);
+        vkco.emplace_back("RESTORE_SWITCH", "HSET", fvs);
+        g_redisClient->hset("RESTORE_SWITCH", "switch_oid", serialized_object_id);
     }
     else
     {
         redis_attr_to_oid_map_insert(ATTR2OID_PREFIX + fvStr, *object_id);
-        g_redisRestoreClient->hset(ATTR2OID_PREFIX + fvStr, key, "NULL");
-        g_redisRestoreClient->hmset(OID2ATTR_PREFIX + key, entry.begin(), entry.end());
+        fvs.emplace_back(key, "NULL");
+        vkco.emplace_back(ATTR2OID_PREFIX + fvStr, "HSET", fvs);
+
+        redis_oid_to_attr_map_insert(OID2ATTR_PREFIX + key, entry);
+        vkco.emplace_back(OID2ATTR_PREFIX + key, "HMSET", entry);
+
         if (g_objectOwner != "")
         {
             redis_oid_to_owner_map_insert(key, g_objectOwner);
-            g_redisRestoreClient->hset(OBJ_OWNER_PREFIX + key, "owner", g_objectOwner);
+
+            fvs.clear();
+            fvs.emplace_back("owner", g_objectOwner);
+            vkco.emplace_back(OBJ_OWNER_PREFIX + key, "HSET", fvs);
         }
     }
-
+    g_asicState->set(key, entry, "create", EMPTY_PREFIX, vkco);
     // we assume create will always succeed which may not be true
     // we should make this synchronous call
     return SAI_STATUS_SUCCESS;
 }
 
-// It is for non-sai_object_id_t object create only
+// It is for non-sai_object_id_t object create only.
+// May not be necessary in future, since orchagent did the filtering partially for router, neighbor, nexthop,
 sai_status_t internal_redis_idempotent_create(
         _In_ sai_object_type_t object_type,
         _In_ const std::string &obj_key,   // in format of str_object_type + ":" + serialized_object_id
@@ -259,21 +317,23 @@ sai_status_t internal_redis_idempotent_create(
     std::string restoreKey = OID2ATTR_PREFIX + obj_key;
 
     // For non-sai_object_id_t object, the key may be used directly.
-    auto exist = g_redisRestoreClient->exists(restoreKey);
-    if (exist > 0)
+    std::vector<swss::FieldValueTuple> fvs = redis_oid_to_attr_map_lookup(restoreKey);
+    if (fvs.size() == 0)
     {
         SWSS_LOG_INFO("RESTORE: skipping generic create key: %s, fields: %s", obj_key.c_str(), fvStr.c_str());
         return SAI_STATUS_SUCCESS;
     }
 
-    g_redisRestoreClient->hmset(OID2ATTR_PREFIX + obj_key,  attr_entry.begin(), attr_entry.end());
+    redis_oid_to_attr_map_insert(restoreKey, attr_entry);
+    std::vector<swss::KeyOpFieldsValuesTuple> vkco;
+    vkco.emplace_back(restoreKey, "HMSET", attr_entry);
 
     if (g_record)
     {
         recordLine("c|" + obj_key + "|" + fvStr);
     }
 
-    g_asicState->set(obj_key, attr_entry, "create");
+    g_asicState->set(obj_key, attr_entry, "create", EMPTY_PREFIX, vkco);
 
     // we assume create will always succeed which may not be true
     // we should make this synchronous call
@@ -289,12 +349,14 @@ sai_status_t internal_redis_idempotent_set(
 {
     SWSS_LOG_ENTER();
 
+    std::vector<swss::KeyOpFieldsValuesTuple> vkco;
+    std::vector<swss::FieldValueTuple> fvs;
     // For set, there is only one entry.
     const swss::FieldValueTuple &fv =  attr_entry[0];
 
     if (object_type == SAI_OBJECT_TYPE_SWITCH)
     {
-        auto ptr_object_id_str = g_redisRestoreClient->hget("SWITCH", fvField(fv));
+        auto ptr_object_id_str = g_redisClient->hget("RESTORE_SWITCH", fvField(fv));
 
         if (ptr_object_id_str != NULL && fvValue(fv) == *ptr_object_id_str)
         {
@@ -304,29 +366,27 @@ sai_status_t internal_redis_idempotent_set(
         }
         else
         {
-            g_redisRestoreClient->hset("SWITCH", fvField(fv), fvValue(fv));
-            g_asicState->set(obj_key, attr_entry, "set");
+            vkco.emplace_back("RESTORE_SWITCH", "HMSET", attr_entry);
+            g_asicState->set(obj_key, attr_entry, "set", EMPTY_PREFIX, vkco);
             return SAI_STATUS_SUCCESS;
         }
     }
 
     std::string restoreKey = OID2ATTR_PREFIX + obj_key;
-    std::map<std::string, std::string> attr_map;
-    g_redisRestoreClient->hgetall(restoreKey, std::inserter(attr_map, attr_map.end()));
-
-    if (attr_map.size() > 0)
+    auto current_fvs = redis_oid_to_attr_map_lookup(restoreKey);
+    if (current_fvs.size() > 0)
     {
-        auto it = attr_map.begin();
-        while (it != attr_map.end())
+        auto it = current_fvs.begin();
+        while (it != current_fvs.end())
         {
-            if (fvField(fv) == it->first)
+            if (fvField(fv) == fvField(*it))
             {
                 break;
             }
             it++;
         }
         // If no change to attribute value, just return success.
-        if (it != attr_map.end() && it->second == fvValue(fv))
+        if (it != current_fvs.end() && fvValue(*it) == fvValue(fv))
         {
             SWSS_LOG_INFO("RESTORE: skipping generic set key: %s, %s:%s no change",
                     obj_key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
@@ -335,23 +395,21 @@ sai_status_t internal_redis_idempotent_set(
 
         // If it is default object created by libsai, don't check reverse mapping.
         std::string defaultObjKey = DEFAULT_OBJ_PREFIX + obj_key;
-        auto default_exist = g_redisRestoreClient->exists(defaultObjKey);
+        auto tmp_fvs = redis_oid_to_attr_map_lookup(defaultObjKey);
 
         // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
         if (object_type != SAI_OBJECT_TYPE_FDB_ENTRY &&
             object_type != SAI_OBJECT_TYPE_NEIGHBOR_ENTRY &&
             object_type != SAI_OBJECT_TYPE_ROUTE_ENTRY &&
-            default_exist == 0)
+            tmp_fvs.size() == 0)
         {
             auto owner_str = redis_oid_to_owner_map_lookup(obj_key);
             SET_OBJ_OWNER(owner_str);
 
-            std::string fvStr = joinOrderedFieldValues(attr_map);
+            std::string fvStr = joinOrderedFieldValues(current_fvs);
             std::string attrFvStr = ATTR2OID_PREFIX + fvStr;
 
-            sai_object_id_t objectId;
-            objectId = redis_attr_to_oid_map_lookup(attrFvStr);
-
+            sai_object_id_t objectId = redis_attr_to_oid_map_lookup(attrFvStr);
             if (objectId == SAI_NULL_OBJECT_ID)
             {
                 UNSET_OBJ_OWNER();
@@ -359,27 +417,40 @@ sai_status_t internal_redis_idempotent_set(
                         obj_key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str(), attrFvStr.c_str());
                 return SAI_STATUS_ITEM_NOT_FOUND;
             }
+
             // Clean old attributes to obj_key mapping.
-            g_redisRestoreClient->hdel(attrFvStr, obj_key);
+            vkco.emplace_back(attrFvStr, "DEL", fvs);
             redis_attr_to_oid_map_erase(attrFvStr);
 
             // Save default attributes to OID mapping if not done yet
             std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + obj_key;
-            auto oid_exist = g_redisRestoreClient->exists(defaultKey);
-            if (oid_exist == 0)
+            auto default_fvs = redis_oid_to_attr_map_lookup(defaultKey);
+            if (default_fvs.size() == 0)
             {
                 // attribute changed from the original create, save the default mapping.
                 // Here we assume no need to save default mapping for route/neighbor/fdb, double check!
-                g_redisRestoreClient->hmset(defaultKey, attr_map.begin(), attr_map.end());
-                g_redisRestoreClient->hset(DEFAULT_ATTR2OID_PREFIX + fvStr, obj_key, "NULL");
+                vkco.emplace_back(defaultKey, "HMSET", current_fvs);
+                vkco.emplace_back(DEFAULT_ATTR2OID_PREFIX + fvStr, "HSET",
+                    std::vector<swss::FieldValueTuple>{swss::FieldValueTuple(obj_key, "NULL")});
                 redis_attr_to_oid_map_insert(DEFAULT_ATTR2OID_PREFIX + fvStr, objectId);
             }
 
             // Update or insert the attribute value and attributes to OID map
-            attr_map[fvField(fv)] = fvValue(fv);
-            fvStr = joinOrderedFieldValues(attr_map);
+            for (auto &i : current_fvs)
+            {
+                if (fvField(fv) == fvField(i))
+                {
+                    fvValue(i) = fvValue(fv);
+                    break;
+                }
+            }
+
+            fvStr = joinOrderedFieldValues(current_fvs);
             attrFvStr = ATTR2OID_PREFIX + fvStr;
-            g_redisRestoreClient->hset(attrFvStr, obj_key, "NULL");
+
+            fvs.clear();
+            fvs.emplace_back(obj_key, "NULL");
+            vkco.emplace_back(attrFvStr, "HSET", fvs);
             redis_attr_to_oid_map_insert(attrFvStr, objectId);
             SWSS_LOG_DEBUG("RESTORE_DB: generic set key: %s, %s:%s",
                     obj_key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
@@ -392,20 +463,21 @@ sai_status_t internal_redis_idempotent_set(
         // For objects created by ASIC/SDK/LibSAI, they will reach here.
         // Add an entry in DEFAULT_OBJ_PREFIX table.
         // It is an indication that this object is not created by orchagent.
-        // Only the first attribute set is logged.
-        g_redisRestoreClient->hset(DEFAULT_OBJ_PREFIX + obj_key, fvField(fv), fvValue(fv));
+
+        vkco.emplace_back(DEFAULT_OBJ_PREFIX + obj_key, "HMSET", attr_entry);
+        redis_oid_to_attr_map_insert(DEFAULT_OBJ_PREFIX + obj_key, attr_entry);
     }
     // Update the attribute in obj_key to attributes map
-    g_redisRestoreClient->hset(restoreKey, fvField(fv), fvValue(fv));
+    redis_oid_to_attr_map_insert(restoreKey, current_fvs);
+    vkco.emplace_back(restoreKey, "HMSET", attr_entry);
 
     if (g_record)
     {
         recordLine("s|" + obj_key + "|" + joinFieldValues(attr_entry));
     }
-    g_asicState->set(obj_key, attr_entry, "set");
+    g_asicState->set(obj_key, attr_entry, "set", EMPTY_PREFIX, vkco);
     return SAI_STATUS_SUCCESS;
 }
-
 
 // obj_key: in format of str_object_type + ":" + serialized_object_id
 sai_status_t internal_redis_idempotent_remove(
@@ -414,17 +486,16 @@ sai_status_t internal_redis_idempotent_remove(
 {
     SWSS_LOG_ENTER();
 
+    std::vector<swss::KeyOpFieldsValuesTuple> vkco;
+    std::vector<swss::FieldValueTuple> fvs;
+
     std::string restoreKey;
     restoreKey = OID2ATTR_PREFIX + obj_key;
 
-    std::map<std::string, std::string> attr_map;
-    g_redisRestoreClient->hgetall(restoreKey, std::inserter(attr_map, attr_map.end()));
-
-    if (attr_map.size() > 0)
+    fvs = redis_oid_to_attr_map_lookup(restoreKey);
+    if (fvs.size() > 0)
     {
         SWSS_LOG_DEBUG("RESTORE_DB: generic remove key: %s", obj_key.c_str());
-        g_redisRestoreClient->del(restoreKey);
-
         // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
         // For object with key type of sai_object_id_t, there is reverse mapping from
         // attributes to OID.
@@ -434,10 +505,11 @@ sai_status_t internal_redis_idempotent_remove(
         {
             // If it is default object created by libsai, don't check reverse mapping.
             std::string defaultObjKey = DEFAULT_OBJ_PREFIX + obj_key;
-            auto exist = g_redisRestoreClient->exists(defaultObjKey);
-            if (exist > 0)
+            auto tmp_fvs = redis_oid_to_attr_map_lookup(defaultObjKey);
+            if (tmp_fvs.size() > 0)
             {
-                g_redisRestoreClient->del(defaultObjKey);
+                vkco.emplace_back(defaultObjKey, "DEL", tmp_fvs);
+                redis_oid_to_attr_map_erase(defaultObjKey);
             }
             else
             {
@@ -445,11 +517,11 @@ sai_status_t internal_redis_idempotent_remove(
                 if (owner_str != "")
                 {
                     SET_OBJ_OWNER(owner_str);
-                    g_redisRestoreClient->del(OBJ_OWNER_PREFIX + obj_key);
+                    vkco.emplace_back(OBJ_OWNER_PREFIX + obj_key, "DEL", fvs);
                     redis_oid_to_owner_map_erase(obj_key);
                 }
 
-                std::string attrFvStr = ATTR2OID_PREFIX + joinOrderedFieldValues(attr_map);
+                std::string attrFvStr = ATTR2OID_PREFIX + joinOrderedFieldValues(fvs);
                 sai_object_id_t object_id = redis_attr_to_oid_map_lookup(attrFvStr);
                 if (object_id == SAI_NULL_OBJECT_ID)
                 {
@@ -458,17 +530,16 @@ sai_status_t internal_redis_idempotent_remove(
                             obj_key.c_str(), attrFvStr.c_str());
                     return SAI_STATUS_ITEM_NOT_FOUND;
                 }
-                g_redisRestoreClient->del(attrFvStr);
+
+                vkco.emplace_back(attrFvStr, "DEL", fvs);
                 redis_attr_to_oid_map_erase(attrFvStr);
 
                 // Also check if there is default attributes OID mapping for this object
                 std::string defaultKey = DEFAULT_OID2ATTR_PREFIX + obj_key;
-                std::map<std::string, std::string> default_attr_map;
-
-                g_redisRestoreClient->hgetall(defaultKey, std::inserter(default_attr_map, default_attr_map.end()));
-                if (default_attr_map.size() > 0)
+                auto defalut_fvs = redis_oid_to_attr_map_lookup(defaultKey);
+                if (defalut_fvs.size() > 0)
                 {
-                    attrFvStr = DEFAULT_ATTR2OID_PREFIX + joinOrderedFieldValues(default_attr_map);
+                    attrFvStr = DEFAULT_ATTR2OID_PREFIX + joinOrderedFieldValues(defalut_fvs);
                     object_id = redis_attr_to_oid_map_lookup(attrFvStr);
                     if (object_id == SAI_NULL_OBJECT_ID)
                     {
@@ -477,14 +548,16 @@ sai_status_t internal_redis_idempotent_remove(
                                 obj_key.c_str(), attrFvStr.c_str());
                         return SAI_STATUS_ITEM_NOT_FOUND;
                     }
-                    g_redisRestoreClient->del(attrFvStr);
+                    vkco.emplace_back(attrFvStr, "DEL", fvs);
                     redis_attr_to_oid_map_erase(attrFvStr);
                     // Assuming no need to save default mapping for route/neighbor/fdb, double check!
-                    g_redisRestoreClient->del(defaultKey);
+                    vkco.emplace_back(defaultKey, "DEL", fvs);
                 }
                 UNSET_OBJ_OWNER();
             }
         }
+        vkco.emplace_back(restoreKey, "DEL", fvs);
+        redis_oid_to_attr_map_erase(restoreKey);
     }
     else
     {
@@ -509,7 +582,7 @@ sai_status_t internal_redis_idempotent_remove(
     {
         recordLine("r|" + obj_key);
     }
-    g_asicState->del(obj_key, "remove");
+    g_asicState->del(obj_key, "remove", EMPTY_PREFIX, vkco);
 
     return SAI_STATUS_SUCCESS;
 }

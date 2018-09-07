@@ -30,6 +30,7 @@ extern sai_status_t internal_redis_idempotent_remove(
 
 extern void redis_attr_to_oid_map_restore(void);
 extern void redis_oid_to_owner_map_restore(void);
+extern void redis_oid_to_attr_map_restore(void);
 
 extern std::string joinOrderedFieldValues(
         _In_ const std::vector<swss::FieldValueTuple> &values);

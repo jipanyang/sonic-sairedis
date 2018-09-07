@@ -5,21 +5,21 @@
  * Object created with certain set of attributes, but the attributes may get changed later.
  * The inital value of ATTR2OID and OID2ATTR mapping saved in DEFAULT table.
  */
-#define DEFAULT_ATTR2OID_PREFIX    ("DEFAULT_ATTR2OID_" + (g_objectOwner))
-#define DEFAULT_OID2ATTR_PREFIX    "DEFAULT_OID2ATTR_"
+#define DEFAULT_ATTR2OID_PREFIX    ("RESTORE_DEFAULT_ATTR2OID_" + (g_objectOwner))
+#define DEFAULT_OID2ATTR_PREFIX    "RESTORE_DEFAULT_OID2ATTR_"
 
 /*
  * For objects created by asic SDK/Libsai and changed by orchagent.
  */
-#define DEFAULT_OBJ_PREFIX    "DEFAULT_OBJ_"
+#define DEFAULT_OBJ_PREFIX    "RESTORE_DEFAULT_OBJ_"
 
 /*
  * The mapping between OID and attributes
  */
-#define ATTR2OID_PREFIX    ("ATTR2OID_" + (g_objectOwner))
-#define OID2ATTR_PREFIX    "OID2ATTR_"
+#define ATTR2OID_PREFIX    ("RESTORE_ATTR2OID_" + (g_objectOwner))
+#define OID2ATTR_PREFIX    "RESTORE_OID2ATTR_"
 
-#define OBJ_OWNER_PREFIX   "OBJ_OWNER_"
+#define OBJ_OWNER_PREFIX   "RESTORE_OBJ_OWNER_"
 /*
  * For certain type of object, multiple objects may be created with the exact
  * same atrributes. The macro is to specify owner of the objects so they may be
