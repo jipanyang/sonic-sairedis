@@ -149,11 +149,19 @@ static inline std::vector<swss::FieldValueTuple> redis_oid_to_atrr_db_lookup(
 
 void redis_oid_to_attr_map_restore(void)
 {
+    // For objects created by libsai/SDK
+    for (const auto &object_id_str : g_redisClient->keys(DEFAULT_OBJ_PREFIX + std::string("*")))
+    {
+        oid2attr[object_id_str] = redis_oid_to_atrr_db_lookup(object_id_str);
+    }
+
+    // For saving objects with initial attributes list
     for (const auto &object_id_str : g_redisClient->keys(DEFAULT_OID2ATTR_PREFIX + std::string("*")))
     {
         oid2attr[object_id_str] = redis_oid_to_atrr_db_lookup(object_id_str);
     }
 
+    // object to latest attributes
     for (const auto &object_id_str : g_redisClient->keys(OID2ATTR_PREFIX + std::string("*")))
     {
         oid2attr[object_id_str] = redis_oid_to_atrr_db_lookup(object_id_str);
@@ -318,7 +326,7 @@ sai_status_t internal_redis_idempotent_create(
 
     // For non-sai_object_id_t object, the key may be used directly.
     std::vector<swss::FieldValueTuple> fvs = redis_oid_to_attr_map_lookup(restoreKey);
-    if (fvs.size() == 0)
+    if (fvs.size() > 0)
     {
         SWSS_LOG_INFO("RESTORE: skipping generic create key: %s, fields: %s", obj_key.c_str(), fvStr.c_str());
         return SAI_STATUS_SUCCESS;
@@ -372,6 +380,7 @@ sai_status_t internal_redis_idempotent_set(
         }
     }
 
+    std::string defaultObjKey = DEFAULT_OBJ_PREFIX + obj_key;
     std::string restoreKey = OID2ATTR_PREFIX + obj_key;
     auto current_fvs = redis_oid_to_attr_map_lookup(restoreKey);
     if (current_fvs.size() > 0)
@@ -394,14 +403,13 @@ sai_status_t internal_redis_idempotent_set(
         }
 
         // If it is default object created by libsai, don't check reverse mapping.
-        std::string defaultObjKey = DEFAULT_OBJ_PREFIX + obj_key;
-        auto tmp_fvs = redis_oid_to_attr_map_lookup(defaultObjKey);
+        auto default_obj_fvs = redis_oid_to_attr_map_lookup(defaultObjKey);
 
         // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
         if (object_type != SAI_OBJECT_TYPE_FDB_ENTRY &&
             object_type != SAI_OBJECT_TYPE_NEIGHBOR_ENTRY &&
             object_type != SAI_OBJECT_TYPE_ROUTE_ENTRY &&
-            tmp_fvs.size() == 0)
+            default_obj_fvs.size() == 0)
         {
             auto owner_str = redis_oid_to_owner_map_lookup(obj_key);
             SET_OBJ_OWNER(owner_str);
@@ -464,8 +472,9 @@ sai_status_t internal_redis_idempotent_set(
         // Add an entry in DEFAULT_OBJ_PREFIX table.
         // It is an indication that this object is not created by orchagent.
 
-        vkco.emplace_back(DEFAULT_OBJ_PREFIX + obj_key, "HMSET", attr_entry);
-        redis_oid_to_attr_map_insert(DEFAULT_OBJ_PREFIX + obj_key, attr_entry);
+        assert(attr_entry.size() == 1);
+        vkco.emplace_back(defaultObjKey, "HSET", attr_entry);
+        redis_oid_to_attr_map_insert(defaultObjKey, attr_entry);
     }
     // Update the attribute in obj_key to attributes map
     redis_oid_to_attr_map_insert(restoreKey, current_fvs);
