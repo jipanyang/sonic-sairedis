@@ -438,6 +438,8 @@ sai_status_t internal_redis_idempotent_set(
                 // attribute changed from the original create, save the default mapping.
                 // Here we assume no need to save default mapping for route/neighbor/fdb, double check!
                 vkco.emplace_back(defaultKey, "HMSET", current_fvs);
+                redis_oid_to_attr_map_insert(defaultKey, current_fvs);
+
                 vkco.emplace_back(DEFAULT_ATTR2OID_PREFIX + fvStr, "HSET",
                     std::vector<swss::FieldValueTuple>{swss::FieldValueTuple(obj_key, "NULL")});
                 redis_attr_to_oid_map_insert(DEFAULT_ATTR2OID_PREFIX + fvStr, objectId);
@@ -504,7 +506,7 @@ sai_status_t internal_redis_idempotent_remove(
     fvs = redis_oid_to_attr_map_lookup(restoreKey);
     if (fvs.size() > 0)
     {
-        SWSS_LOG_DEBUG("RESTORE_DB: generic remove key: %s", obj_key.c_str());
+        SWSS_LOG_INFO("RESTORE_DB: generic remove key: %s", obj_key.c_str());
         // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
         // For object with key type of sai_object_id_t, there is reverse mapping from
         // attributes to OID.
@@ -561,6 +563,7 @@ sai_status_t internal_redis_idempotent_remove(
                     redis_attr_to_oid_map_erase(attrFvStr);
                     // Assuming no need to save default mapping for route/neighbor/fdb, double check!
                     vkco.emplace_back(defaultKey, "DEL", fvs);
+                    redis_oid_to_attr_map_erase(defaultKey);
                 }
                 UNSET_OBJ_OWNER();
             }
