@@ -7,6 +7,7 @@
 
 volatile bool g_asicInitViewMode = false; // default mode is apply mode
 volatile bool g_useTempView = false;
+extern bool g_idempotent;
 
 sai_status_t sai_redis_internal_notify_syncd(
         _In_ const std::string& key)
@@ -264,6 +265,7 @@ sai_status_t redis_set_switch_attribute(
 
             case SAI_REDIS_SWITCH_ATTR_USE_TEMP_VIEW:
                 g_useTempView = attr->value.booldata;
+                g_idempotent = false;
                 return SAI_STATUS_SUCCESS;
 
             case SAI_REDIS_SWITCH_ATTR_USE_PIPELINE:

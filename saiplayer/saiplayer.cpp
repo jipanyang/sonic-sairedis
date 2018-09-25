@@ -1387,7 +1387,7 @@ int main(int argc, char **argv)
     sai_metadata_log = &sai_meta_log_syncd;
 #pragma GCC diagnostic pop
 
-    // sai_api_initialize will reset g_useTempView, same the value from cmdline option
+    // sai_api_initialize will reset g_useTempView, save the value from cmdline option
     bool useTempView = g_useTempView;
     EXIT_ON_ERROR(sai_api_initialize(0, (const sai_service_method_table_t *)&test_services));
     g_useTempView = useTempView;
