@@ -14,6 +14,13 @@
  */
 
 /**
+ * When set to true extra logging will be added for tracking references.  This
+ * is useful for debugging, but for production operations this will produce too
+ * much noise in logs, and we still can replay scenario using recordings.
+ */
+bool enableRefernceCountLogs = false;
+
+/**
  * @brief Represents SAI object status during comparison
  */
 typedef enum _sai_object_status_t
@@ -1002,6 +1009,9 @@ class AsicView
         {
             SWSS_LOG_ENTER();
 
+            SWSS_LOG_INFO("%s: %s -> %s:%s", currentObj->str_object_type.c_str(), currentObj->str_object_id.c_str(),
+                    attr->getStrAttrId().c_str(), attr->getStrAttrValue().c_str());
+
             m_asicOperationId++;
 
             /*
@@ -1059,6 +1069,8 @@ class AsicView
             sai_object_id_t vid = (currentObj->isOidObject()) ? currentObj->getVid() : SAI_NULL_OBJECT_ID;
 
             m_asicOperations.push_back(AsicOperation(m_asicOperationId, vid, false, kco));
+
+            dumpRef("set");
         }
 
         /**
@@ -1078,6 +1090,8 @@ class AsicView
                 _In_ const std::shared_ptr<SaiObj> &currentObj)
         {
             SWSS_LOG_ENTER();
+
+            SWSS_LOG_INFO("%s: %s", currentObj->str_object_type.c_str(), currentObj->str_object_id.c_str());
 
             m_asicOperationId++;
 
@@ -1173,6 +1187,8 @@ class AsicView
             sai_object_id_t vid = (currentObj->isOidObject()) ? currentObj->getVid() : SAI_NULL_OBJECT_ID;
 
             m_asicOperations.push_back(AsicOperation(m_asicOperationId, vid, false, kco));
+
+            dumpRef("create");
         }
 
         /**
@@ -1184,6 +1200,8 @@ class AsicView
                 _In_ const std::shared_ptr<SaiObj> &currentObj)
         {
             SWSS_LOG_ENTER();
+
+            SWSS_LOG_INFO("%s: %s", currentObj->str_object_type.c_str(), currentObj->str_object_id.c_str());
 
             m_asicOperationId++;
 
@@ -1292,6 +1310,8 @@ class AsicView
 
                 m_asicRemoveOperationsNonObjectId.push_back(AsicOperation(m_asicOperationId, vid, true, kco));
             }
+
+            dumpRef("remove");
         }
 
         std::vector<AsicOperation> asicGetWithOptimizedRemoveOperations() const
@@ -1330,6 +1350,33 @@ class AsicView
                     continue;
                 }
 
+                /*
+                 * NOTE: When operation is SET on OID object it can release
+                 * references on that OID, and if that OID is later to be
+                 * removed a wrong order of operations will happen:
+                 *
+                 * not optimized scenario:
+                 * - create object A
+                 * - set object B attr (releases reference on C)
+                 * - remove object D (release reference on C)
+                 * - remove object C
+                 *
+                 * this logic could result with wrong order:
+                 * - remove D
+                 * - remove C (will break reference count on C, since used in B)
+                 *   since D is considered last OP releasing C reference
+                 * - create A
+                 * - set object B with A
+                 *
+                 * correct optimized logic:
+                 * - remove D
+                 * - create A
+                 * - set object B with A
+                 * - remove C
+                 *
+                 * This is fixed by checking if last operation to release reference was REMOVE
+                 */
+
                 if (op.vid == SAI_NULL_OBJECT_ID)
                 {
                     SWSS_LOG_THROW("non object id remove not exected here");
@@ -1349,7 +1396,7 @@ class AsicView
 
                     v.insert(v.begin() + index, op);
 
-                    SWSS_LOG_DEBUG("move 0x%lx all way up (not in map): %s to index: %zu", op.vid,
+                    SWSS_LOG_INFO("move 0x%lx all way up (not in map): %s to index: %zu", op.vid,
                             sai_serialize_object_type(redis_sai_object_type_query(op.vid)).c_str(),index);
 
                     index++;
@@ -1369,6 +1416,11 @@ class AsicView
                  * If operation is found then we need to insert this op after
                  * current iterator and forward iterator.
                  *
+                 * But there is a catch here, if that last operation was REMOVE,
+                 * then it was forwarded all the way to the UP, but in the
+                 * middle we could have some "SET" operations that would
+                 * release this reference also we in this case, we can't just
+                 * move this remove just after previous remove.
                  */
 
                 int lastOpIdDecRef = mit->second;
@@ -1381,6 +1433,23 @@ class AsicView
                             sai_serialize_object_id(op.vid).c_str());
                 }
 
+                if (itr->isRemove)
+                {
+                    SWSS_LOG_INFO("previous operation to release reference %s was also REMOVE, we push current REMOVE op at the list end",
+                            sai_serialize_object_id(mit->first).c_str());
+
+                    /*
+                     * If previous operation was REMOVE (it could be pushed to
+                     * the top) so push current operation to the list here,
+                     * instead of possible break reference count on SET
+                     * operations.
+                     */
+
+                    v.push_back(op);
+
+                    continue;
+                }
+
                 /*
                  * We add +1 since we need to insert current object AFTER the one that we found
                  */
@@ -1389,14 +1458,14 @@ class AsicView
 
                 if (lastOpIdDecRefIndex > index)
                 {
-                    SWSS_LOG_DEBUG("index update from %zu to %zu", index, lastOpIdDecRefIndex);
+                    SWSS_LOG_INFO("index update from %zu to %zu", index, lastOpIdDecRefIndex);
 
                     index = lastOpIdDecRefIndex;
                 }
 
                 v.insert(v.begin() + index, op);
 
-                SWSS_LOG_DEBUG("move 0x%lx in the middle up: %s (last: %zu curr: %zu)", op.vid,
+                SWSS_LOG_INFO("move 0x%lx in the middle up: %s (last: %zu curr: %zu)", op.vid,
                             sai_serialize_object_type(redis_sai_object_type_query(op.vid)).c_str(), lastOpIdDecRefIndex, index);
 
                 index++;
@@ -1449,6 +1518,55 @@ class AsicView
             SWSS_LOG_ENTER();
 
             return vidToRid.find(vid) != vidToRid.end();
+        }
+
+        void dumpRef(const std::string & asicName)
+        {
+            SWSS_LOG_ENTER();
+
+            if (enableRefernceCountLogs == false)
+                return;
+
+            SWSS_LOG_NOTICE("dump references in ASIC VIEW: %s", asicName.c_str());
+
+            for (auto kvp: m_vidReference)
+            {
+                sai_object_id_t oid = kvp.first;
+
+                sai_object_type_t ot = redis_sai_object_type_query(oid);
+
+                switch (ot)
+                {
+                    case SAI_OBJECT_TYPE_LAG:
+                    case SAI_OBJECT_TYPE_NEXT_HOP:
+                    case SAI_OBJECT_TYPE_NEXT_HOP_GROUP:
+                    case SAI_OBJECT_TYPE_NEXT_HOP_GROUP_MEMBER:
+                    case SAI_OBJECT_TYPE_ROUTE_ENTRY:
+                    case SAI_OBJECT_TYPE_ROUTER_INTERFACE:
+                        break;
+
+                        // skip object we have no intrest into
+                    default:
+                        continue;
+                }
+
+                SWSS_LOG_NOTICE("ref %s: %s: %d",
+                        sai_serialize_object_type(ot).c_str(),
+                        sai_serialize_object_id(oid).c_str(),
+                        kvp.second);
+            }
+        }
+
+        void dumpVidToAsicOperatioId()
+        {
+            SWSS_LOG_ENTER();
+
+            for (auto a:  m_vidToAsicOperationId)
+            {
+                SWSS_LOG_WARN("%d: %s:%s", a.second,
+                        sai_serialize_object_type(redis_sai_object_type_query(a.first)).c_str(),
+                        sai_serialize_object_id(a.first).c_str());
+            }
         }
 
     private:
@@ -1541,6 +1659,13 @@ class AsicView
                     sai_object_id_t vid = m->getoid(&currentObj->meta_key);
 
                     m_vidReference[vid] += value;
+
+                    if (enableRefernceCountLogs)
+                    {
+                        SWSS_LOG_WARN("updated vid %s refrence to %d",
+                                sai_serialize_object_id(vid).c_str(),
+                                m_vidReference[vid]);
+                    }
 
                     if (m_vidReference[vid] == 0)
                     {
@@ -2276,7 +2401,230 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForLag(
         }
     }
 
-    SWSS_LOG_NOTICE("failed to find best candidate for LAG using LAG member and port id");
+    SWSS_LOG_WARN("failed to find best candidate for LAG using LAG member and port id");
+
+    return nullptr;
+}
+
+std::shared_ptr<SaiObj> findCurrentBestMatchForNextHopGroup(
+        _In_ const AsicView &currentView,
+        _In_ const AsicView &temporaryView,
+        _In_ const std::shared_ptr<const SaiObj> &temporaryObj,
+        _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * First find route entries on which temporary NHG is assigned.
+     */
+
+    const auto tmpRouteEntries = temporaryView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_ROUTE_ENTRY);
+
+    std::shared_ptr<SaiObj> tmpRouteCandidate = nullptr;
+
+    for (auto tmpRoute: tmpRouteEntries)
+    {
+        if (!tmpRoute->hasAttr(SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID))
+            continue;
+
+        const auto routeNH = tmpRoute->getSaiAttr(SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID);
+
+        if (routeNH->getSaiAttr()->value.oid != temporaryObj->getVid())
+            continue;
+
+        tmpRouteCandidate = tmpRoute;
+
+        SWSS_LOG_NOTICE("Found route candidate for NHG: %s: %s",
+                temporaryObj->str_object_id.c_str(),
+                tmpRoute->str_object_id.c_str());
+
+        break;
+    }
+
+    if (tmpRouteCandidate == nullptr)
+    {
+        SWSS_LOG_NOTICE("failed to find route candidate for NHG: %s",
+                temporaryObj->str_object_id.c_str());
+
+        return false;
+    }
+
+    /*
+     * We found route candidate, then let's find the same route on the candidate side.
+     * But we will only compare prefix value.
+     */
+
+    const auto curRouteEntries = currentView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_ROUTE_ENTRY);
+
+    for (auto curRoute: curRouteEntries)
+    {
+        std::string tmpPrefix = sai_serialize_ip_prefix(tmpRouteCandidate->meta_key.objectkey.key.route_entry.destination);
+        std::string curPrefix = sai_serialize_ip_prefix(curRoute->meta_key.objectkey.key.route_entry.destination);
+
+        if (tmpPrefix != curPrefix)
+            continue;
+
+        /*
+         * Prefixes are equal, now find candidate NHG.
+         */
+
+        if (!curRoute->hasAttr(SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID))
+            continue;
+
+        const auto routeNH = curRoute->getSaiAttr(SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID);
+
+        sai_object_id_t curNextHopId = routeNH->getSaiAttr()->value.oid;
+
+        for (auto candidate: candidateObjects)
+        {
+            if (curNextHopId != candidate.obj->getVid())
+                continue;
+
+            SWSS_LOG_NOTICE("Found NHG candidate %s", candidate.obj->str_object_id.c_str());
+
+            return candidate.obj;
+        }
+    }
+
+    SWSS_LOG_NOTICE("failed to find best candidate for next hop group using route_entry");
+
+    return nullptr;
+}
+
+std::shared_ptr<SaiObj> findCurrentBestMatchForAclTableGroup(
+        _In_ const AsicView &currentView,
+        _In_ const AsicView &temporaryView,
+        _In_ const std::shared_ptr<const SaiObj> &temporaryObj,
+        _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * Since we know that ports are matched, they have same VID/RID in both
+     * temporary and current view.
+     */
+
+    const auto ports = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_PORT);
+
+    for (auto port: ports)
+    {
+        if (!port->hasAttr(SAI_PORT_ATTR_INGRESS_ACL))
+            continue;
+
+        auto inACL = port->getSaiAttr(SAI_PORT_ATTR_INGRESS_ACL);
+
+        if (inACL->getSaiAttr()->value.oid != temporaryObj->getVid())
+            continue;
+
+        SWSS_LOG_DEBUG("found port candidate %s for ACL table group",
+                port->str_object_id.c_str());
+
+
+        auto curPort = currentView.oOids.at(port->getVid());
+
+        if (!curPort->hasAttr(SAI_PORT_ATTR_INGRESS_ACL))
+            continue;
+
+        inACL = curPort->getSaiAttr(SAI_PORT_ATTR_INGRESS_ACL);
+
+        sai_object_id_t atgVid = inACL->getSaiAttr()->value.oid;
+
+        for (auto c: candidateObjects)
+        {
+            if (c.obj->getVid() == atgVid)
+            {
+                SWSS_LOG_INFO("found ALC table group candidate %s using port %s",
+                        port->str_object_id.c_str(),
+                        c.obj->str_object_id.c_str());
+
+                return c.obj;
+            }
+        }
+    }
+
+    /*
+     * Port didn't work, try to find match by LAG, but lag will be tricky,
+     * since it will be not matched since if this unprocessed acl table group
+     * is processed right now, then if it's assigned to lag then by design we
+     * go recursivly be attributes to match attributes first.
+     */
+
+    // TODO this could be helper method, since we will need this for router interface
+
+    const auto tmpLags = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_LAG);
+
+    for (auto tmpLag: tmpLags)
+    {
+        if (!tmpLag->hasAttr(SAI_LAG_ATTR_INGRESS_ACL))
+            continue;
+
+        auto inACL = tmpLag->getSaiAttr(SAI_LAG_ATTR_INGRESS_ACL);
+
+        if (inACL->getSaiAttr()->value.oid != temporaryObj->getVid())
+            continue;
+
+        /*
+         * We found LAG on which this ACL is present, but this object status is
+         * not processed so we need to trace back to port using LAG member.
+         */
+
+        SWSS_LOG_INFO("found LAG candidate: lag status %d", tmpLag->getObjectStatus());
+
+        const auto tmpLagMembers = temporaryView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_LAG_MEMBER);
+
+        for (auto tmpLagMember: tmpLagMembers)
+        {
+            const auto tmpLagMemberLagAttr = tmpLagMember->getSaiAttr(SAI_LAG_MEMBER_ATTR_LAG_ID);
+
+            if (tmpLagMemberLagAttr->getSaiAttr()->value.oid != tmpLag->getVid())
+                continue;
+
+            const auto tmpLagMemberPortAttr = tmpLagMember->getSaiAttr(SAI_LAG_MEMBER_ATTR_PORT_ID);
+
+            sai_object_id_t tmpPortVid = tmpLagMemberPortAttr->getSaiAttr()->value.oid;
+
+            SWSS_LOG_INFO("found tmp LAG member port! %s", sai_serialize_object_id(tmpPortVid).c_str());
+
+            sai_object_id_t portRid = temporaryView.vidToRid.at(tmpPortVid);
+
+            sai_object_id_t curPortVid = currentView.ridToVid.at(portRid);
+
+            const auto curLagMembers = currentView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_LAG_MEMBER);
+
+            for (auto curLagMember: curLagMembers)
+            {
+                const auto curLagMemberPortAttr = curLagMember->getSaiAttr(SAI_LAG_MEMBER_ATTR_PORT_ID);
+
+                if (curLagMemberPortAttr->getSaiAttr()->value.oid != curPortVid)
+                    continue;
+
+                const auto curLagMemberLagAttr = curLagMember->getSaiAttr(SAI_LAG_MEMBER_ATTR_LAG_ID);
+
+                sai_object_id_t curLagId = curLagMemberLagAttr->getSaiAttr()->value.oid;
+
+                SWSS_LOG_INFO("found current LAG member: %s", curLagMember->str_object_id.c_str());
+
+                auto curLag = currentView.oOids.at(curLagId);
+
+                if (!curLag->hasAttr(SAI_LAG_ATTR_INGRESS_ACL))
+                    continue;
+
+                inACL = curLag->getSaiAttr(SAI_LAG_ATTR_INGRESS_ACL);
+
+                for (auto c: candidateObjects)
+                {
+                    if (c.obj->getVid() != inACL->getSaiAttr()->value.oid)
+                        continue;
+
+                    SWSS_LOG_INFO("found best ACL table group match based on LAG ingress acl: %s", c.obj->str_object_id.c_str());
+
+                    return c.obj;
+                }
+            }
+        }
+    }
+
+    SWSS_LOG_NOTICE("failed to find best candidate for ACL table group using port");
 
     return nullptr;
 }
@@ -2292,7 +2640,7 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObjectUsingHeuristic(
     if (temporaryObj->getObjectType() == SAI_OBJECT_TYPE_LAG)
     {
         /*
-         * For lat, let's try find matching LAG member which will be using the
+         * For lag, let's try find matching LAG member which will be using the
          * same port, since we expect that port object can belong only to 1 lag.
          */
 
@@ -2300,6 +2648,33 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObjectUsingHeuristic(
 
         if (candidateLag != nullptr)
             return candidateLag;
+    }
+
+    if (temporaryObj->getObjectType() == SAI_OBJECT_TYPE_NEXT_HOP_GROUP)
+    {
+        /*
+         * For next hop group, let's try find matching NHG which will be based on
+         * NHG set as SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID in route_entry.
+         * We assume that each class IPv4 and IPv6 will have different NGH, and
+         * each IP prefix will only be assigned to one NHG.
+         */
+
+        std::shared_ptr<SaiObj> candidateNHG = findCurrentBestMatchForNextHopGroup(currentView, temporaryView, temporaryObj, candidateObjects);
+
+        if (candidateNHG != nullptr)
+            return candidateNHG;
+    }
+
+    if (temporaryObj->getObjectType() == SAI_OBJECT_TYPE_ACL_TABLE_GROUP)
+    {
+        /*
+         * For acl table group let's try find matching INGRESS_ACL on matched PORT.
+         */
+
+        std::shared_ptr<SaiObj> candidateATG = findCurrentBestMatchForAclTableGroup(currentView, temporaryView, temporaryObj, candidateObjects);
+
+        if (candidateATG != nullptr)
+            return candidateATG;
     }
 
     /*
@@ -5276,6 +5651,11 @@ sai_status_t syncdApplyView()
 {
     SWSS_LOG_ENTER();
 
+    if (enableRefernceCountLogs)
+    {
+        dump_object_reference();
+    }
+
     SWSS_LOG_TIMER("apply");
 
     /*
@@ -5400,6 +5780,12 @@ sai_status_t syncdApplyView()
         /*
          * Call main method!
          */
+
+        if (enableRefernceCountLogs)
+        {
+            current.dumpRef("current START");
+            temp.dumpRef("temp START");
+        }
 
         applyViewTransition(current, temp);
 
@@ -5853,6 +6239,15 @@ sai_status_t asic_process_event(
 
     SWSS_LOG_INFO("key: %s op: %s", key.c_str(), op.c_str());
 
+    if (enableRefernceCountLogs)
+    {
+        SWSS_LOG_NOTICE("ASIC OP BEFORE : key: %s op: %s", key.c_str(), op.c_str());
+
+        dump_object_reference();
+        current.dumpRef("current before");
+        temporary.dumpRef("temp before");
+    }
+
     sai_common_api_t api = SAI_COMMON_API_MAX;
 
     // TODO convert those in common to use sai_common_api
@@ -5910,6 +6305,15 @@ sai_status_t asic_process_event(
         status = asic_handle_generic(current, temporary, meta_key, api, attr_count, attr_list);
     }
 
+    if (enableRefernceCountLogs)
+    {
+        SWSS_LOG_NOTICE("ASIC OP AFTER : key: %s op: %s", key.c_str(), op.c_str());
+
+        dump_object_reference();
+        current.dumpRef("current after");
+        temporary.dumpRef("temp after");
+    }
+
     if (status == SAI_STATUS_SUCCESS)
     {
         return status;
@@ -5943,6 +6347,31 @@ void executeOperationsOnAsic(
         //swss::Logger::getInstance().setMinPrio(swss::Logger::SWSS_INFO);
 
         SWSS_LOG_TIMER("asic apply");
+
+        if (enableRefernceCountLogs)
+        {
+            currentView.dumpVidToAsicOperatioId();
+
+            SWSS_LOG_NOTICE("NOT optimized operations");
+
+            for (const auto &op: currentView.asicGetOperations())
+            {
+                const std::string &key = kfvKey(*op.op);
+                const std::string &opp = kfvOp(*op.op);
+
+                SWSS_LOG_WARN("%s: %s", opp.c_str(), key.c_str());
+            }
+
+            SWSS_LOG_NOTICE("optimized operations!");
+
+            for (const auto &op: currentView.asicGetWithOptimizedRemoveOperations())
+            {
+                const std::string &key = kfvKey(*op.op);
+                const std::string &opp = kfvOp(*op.op);
+
+                SWSS_LOG_WARN("%s: %s", opp.c_str(), key.c_str());
+            }
+        }
 
         //for (const auto &op: currentView.asicGetOperations())
         for (const auto &op: currentView.asicGetWithOptimizedRemoveOperations())
