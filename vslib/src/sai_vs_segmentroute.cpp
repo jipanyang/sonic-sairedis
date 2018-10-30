@@ -1,7 +1,7 @@
 #include "sai_vs.h"
 #include "sai_vs_internal.h"
 
-sai_status_t vs_create_stp_ports(
+sai_status_t vs_create_segmentroute_sidlists(
         _In_ sai_object_id_t switch_id,
         _In_ uint32_t object_count,
         _In_ const uint32_t *attr_count,
@@ -17,7 +17,7 @@ sai_status_t vs_create_stp_ports(
     return SAI_STATUS_NOT_IMPLEMENTED;
 }
 
-sai_status_t vs_remove_stp_ports(
+sai_status_t vs_remove_segmentroute_sidlists(
         _In_ uint32_t object_count,
         _In_ const sai_object_id_t *object_id,
         _In_ sai_bulk_op_error_mode_t mode,
@@ -30,14 +30,12 @@ sai_status_t vs_remove_stp_ports(
     return SAI_STATUS_NOT_IMPLEMENTED;
 }
 
-VS_GENERIC_QUAD(STP,stp);
-VS_GENERIC_QUAD(STP_PORT,stp_port);
+VS_GENERIC_QUAD(SEGMENTROUTE_SIDLIST,segmentroute_sidlist);
 
-const sai_stp_api_t vs_stp_api = {
+const sai_segmentroute_api_t vs_segmentroute_api = {
 
-    VS_GENERIC_QUAD_API(stp)
-    VS_GENERIC_QUAD_API(stp_port)
+    VS_GENERIC_QUAD_API(segmentroute_sidlist)
 
-    vs_create_stp_ports,
-    vs_remove_stp_ports,
+    vs_create_segmentroute_sidlists,
+    vs_remove_segmentroute_sidlists,
 };

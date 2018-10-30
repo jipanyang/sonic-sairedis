@@ -5,6 +5,8 @@
 #include "swss/tokenize.h"
 #include <limits.h>
 
+#include "swss/warm_restart.h"
+
 extern "C" {
 #include <sai.h>
 }
@@ -12,6 +14,8 @@ extern "C" {
 #include <iostream>
 #include <map>
 #include <unordered_map>
+
+#define DEF_SAI_WARM_BOOT_DATA_FILE "/var/warmboot/sai-warmboot.bin"
 
 /**
  * @brief Global mutex for thread synchronization
@@ -3059,6 +3063,13 @@ void handleProfileMap(const std::string& profileMapFile)
         exit(EXIT_FAILURE);
     }
 
+    // Provide default value at boot up time and let sai profile value
+    // Override following values if existing.
+    // SAI reads these values at start up time. It would be too late to
+    // set these values later when WARM BOOT is detected.
+    gProfileMap[SAI_KEY_WARM_BOOT_WRITE_FILE] = DEF_SAI_WARM_BOOT_DATA_FILE;
+    gProfileMap[SAI_KEY_WARM_BOOT_READ_FILE]  = DEF_SAI_WARM_BOOT_DATA_FILE;
+
     std::string line;
 
     while(getline(profile, line))
@@ -3288,61 +3299,6 @@ void set_sai_api_log_min_prio(const std::string &prioStr)
     }
 }
 
-void performWarmRestart()
-{
-    SWSS_LOG_ENTER();
-
-    /*
-     * There should be no case when we are doing warm restart and there is no
-     * switch defined, we will throw at sucha case.
-     *
-     * This case could be possible when no switches were created and only api
-     * was initialized, but we will skip this scenario and address is when we
-     * will have need for it.
-     */
-
-    auto entries = g_redisClient->keys(ASIC_STATE_TABLE + std::string(":SAI_OBJECT_TYPE_SWITCH:*"));
-
-    if (entries.size() == 0)
-    {
-        SWSS_LOG_THROW("on warm restart there is no switches defined in DB, not supported yet, FIXME");
-    }
-
-    if (entries.size() != 1)
-    {
-        SWSS_LOG_THROW("multiple switches defined in warm start: %zu, not supported yet, FIXME", entries.size());
-    }
-
-    /*
-     * Here wa have only one switch defined, let's extract his vid and rid.
-     */
-
-    /*
-     * Entry should be in format ASIC_STATE:SAI_OBJECT_TYPE_SWITCH:oid:0xYYYY
-     *
-     * Let's extract oid value
-     */
-
-    std::string key = entries.at(0);
-
-    auto start = key.find_first_of(":") + 1;
-    auto end = key.find(":", start);
-
-    std::string strSwitchVid = key.substr(end + 1);
-
-    sai_object_id_t switch_vid;
-
-    sai_deserialize_object_id(strSwitchVid, switch_vid);
-
-    sai_object_id_t switch_rid = translate_vid_to_rid(switch_vid);
-
-    /*
-     * Perform all get operations on existing switch.
-     */
-
-    switches[switch_vid] = std::make_shared<SaiSwitch>(switch_vid, switch_rid);
-}
-
 void onSyncdStart(bool warmStart)
 {
     SWSS_LOG_ENTER();
@@ -3377,14 +3333,6 @@ void onSyncdStart(bool warmStart)
         performWarmRestart();
 
         SWSS_LOG_NOTICE("skipping hard reinit since WARM start was performed");
-
-        // TODO issue here can be that in hard start there was 8 queues then
-        // user added 2, and we have 10, after warm restart, switch will
-        // discover 10 queus, and mark them as "non removable" but 2 of them
-        // can be removed. We would probably need to store all objects after
-        // hard reinit and treat that as base.
-
-        SWSS_LOG_THROW("warm restart is not yet fully supported and needs to be revisited");
         return;
     }
 
@@ -3466,6 +3414,9 @@ int syncd_main(int argc, char **argv)
 
     swss::Logger::linkToDbNative("syncd");
 
+    swss::WarmStart::initialize("syncd", "syncd");
+    swss::WarmStart::checkWarmStart("syncd");
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsuggest-attribute=format"
     sai_metadata_log = &sai_meta_log_syncd;
@@ -3505,6 +3456,11 @@ int syncd_main(int argc, char **argv)
     notifications = std::make_shared<swss::NotificationProducer>(dbNtf.get(), "NOTIFICATIONS");
 
     g_veryFirstRun = isVeryFirstRun();
+
+    if (swss::WarmStart::isWarmStart())
+    {
+        options.startType = SAI_WARM_BOOT;
+    }
 
     if (options.startType == SAI_WARM_BOOT)
     {
@@ -3572,7 +3528,7 @@ int syncd_main(int argc, char **argv)
     try
     {
         SWSS_LOG_NOTICE("before onSyncdStart");
-        onSyncdStart(false);
+        onSyncdStart(options.startType == SAI_WARM_BOOT);
         SWSS_LOG_NOTICE("after onSyncdStart");
 
         startNotificationsProcessingThread();

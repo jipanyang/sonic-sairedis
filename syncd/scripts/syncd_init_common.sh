@@ -34,6 +34,31 @@ case "$(cat /proc/cmdline)" in
 esac
 
 
+function check_warm_boot()
+{
+    # FIXME: if we want to continue start option approach, then we need to add
+    #        code here to support redis database query.
+    # SYSTEM_WARM_START=`/usr/bin/redis-cli -n 4 hget "WARM_RESTART|system" enable`
+    # SERVICE_WARM_START=`/usr/bin/redis-cli -n 4 hget "WARM_RESTART|${SERVICE}" enable`
+    # SYSTEM_WARM_START could be empty, always make WARM_BOOT meaningful.
+    # if [[ x"$SYSTEM_WARM_START" == x"true" ]] || [[ x"$SERVICE_WARM_START" == x"true" ]]; then
+    #     WARM_BOOT="true"
+    # else
+        WARM_BOOT="false"
+    # fi
+}
+
+
+function set_start_type()
+{
+    if [ x"$WARM_BOOT" == x"true" ]; then
+        CMD_ARGS+=" -t warm"
+    elif [ $FAST_REBOOT == "yes" ]; then
+        CMD_ARGS+=" -t fast"
+    fi
+}
+
+
 config_syncd_bcm()
 {
     if [ -f "/etc/sai.d/sai.profile" ]; then
@@ -45,10 +70,6 @@ config_syncd_bcm()
     [ -e /dev/linux-bcm-knet ] || mknod /dev/linux-bcm-knet c 122 0
     [ -e /dev/linux-user-bde ] || mknod /dev/linux-user-bde c 126 0
     [ -e /dev/linux-kernel-bde ] || mknod /dev/linux-kernel-bde c 127 0
-
-    if [ $FAST_REBOOT == "yes" ]; then
-        CMD_ARGS+=" -t fast"
-    fi
 }
 
 config_syncd_mlnx()
@@ -66,10 +87,6 @@ config_syncd_mlnx()
     # Write MAC address into /tmp/profile file.
     cat $HWSKU_DIR/sai.profile > /tmp/sai.profile
     echo "DEVICE_MAC_ADDRESS=$ALIGNED_MAC_ADDRESS" >> /tmp/sai.profile
-
-    if [ $FAST_REBOOT == "yes" ]; then
-        CMD_ARGS+=" -t fast"
-    fi
 }
 
 config_syncd_centec()
@@ -78,10 +95,6 @@ config_syncd_centec()
 
     [ -e /dev/linux_dal ] || mknod /dev/linux_dal c 198 0
     [ -e /dev/net/tun ] || ( mkdir -p /dev/net && mknod /dev/net/tun c 10 200 )
-
-    if [ $FAST_REBOOT == "yes" ]; then
-        CMD_ARGS+=" -t fast"
-    fi
 }
 
 config_syncd_cavium()
@@ -94,10 +107,6 @@ config_syncd_cavium()
     until [ $(redis-cli ping | grep -c PONG) -gt 0 ]; do
         sleep 1
     done
-
-    if [ $FAST_REBOOT == "yes" ]; then
-        CMD_ARGS+=" -t fast"
-    fi
 }
 
 config_syncd_marvell()
@@ -120,22 +129,17 @@ config_syncd_barefoot()
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/bfn/install/lib/platform/$ONIE_PLATFORM:/opt/bfn/install/lib:/opt/bfn/install/lib/tofinopd/switch
     ./opt/bfn/install/bin/dma_setup.sh
     export LD_PRELOAD=libswitchapi.so:libswitchsai.so:libpd.so:libpdcli.so:libdriver.so:libbfsys.so:libbfutils.so:libbf_switchd_lib.so:libtofinopdfixed_thrift.so:libpdthrift.so
-
-    if [ $FAST_REBOOT == "yes" ]; then
-        CMD_ARGS+=" -t fast"
-    fi
 }
 
 config_syncd_nephos()
 {
     CMD_ARGS+=" -p $HWSKU_DIR/sai.profile"
-    if [ $FAST_REBOOT == "yes" ]; then
-        CMD_ARGS+=" -t fast"
-    fi
 }
 
 config_syncd()
 {
+    check_warm_boot
+
     if [ "$SONIC_ASIC_TYPE" == "broadcom" ]; then
         config_syncd_bcm
     elif [ "$SONIC_ASIC_TYPE" == "mellanox" ]; then
@@ -154,6 +158,8 @@ config_syncd()
         echo "Unknown ASIC type $SONIC_ASIC_TYPE"
         exit 1
     fi
+
+    set_start_type
 
     if [ ${ENABLE_SAITHRIFT} == 1 ]; then
         CMD_ARGS+=" -r -m $HWSKU_DIR/port_config.ini"
