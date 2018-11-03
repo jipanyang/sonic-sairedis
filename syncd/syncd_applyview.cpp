@@ -142,6 +142,25 @@ class SaiAttr
         }
 
         /**
+         * @brief Gets value.oid of attribute value.
+         *
+         * If attribute is not OID exception will be thrown.
+         *
+         * @return Oid field of attribute value.
+         */
+        sai_object_id_t getOid() const
+        {
+            SWSS_LOG_ENTER();
+
+            if (m_meta->attrvaluetype != SAI_ATTR_VALUE_TYPE_OBJECT_ID)
+            {
+                SWSS_LOG_THROW("attribute %s is not OID attribute", m_meta->attridname);
+            }
+
+            return m_attr.value.oid;
+        }
+
+        /**
          * @brief Tells whether attribute contains OIDs
          *
          * @return True if attribute contains OIDs, false otherwise
@@ -364,6 +383,19 @@ class SaiObj
 
                 SWSS_LOG_THROW("object %s has no attribute %d", str_object_id.c_str(), id);
             }
+
+            return it->second;
+        }
+
+        std::shared_ptr<const SaiAttr> tryGetSaiAttr(
+                _In_ sai_attr_id_t id) const
+        {
+            SWSS_LOG_ENTER();
+
+            auto it = m_attrs.find(id);
+
+            if (it == m_attrs.end())
+                return nullptr;
 
             return it->second;
         }
@@ -2316,6 +2348,11 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForLag(
     SWSS_LOG_ENTER();
 
     /*
+     * For lag, let's try find matching LAG member which will be using the same
+     * port, since we expect that port object can belong only to 1 lag.
+     */
+
+    /*
      * Find not processed LAG members, in both views, since lag member contais
      * LAG and PORT, then it should not be processed before LAG itself. But
      * since PORT objects on LAG members should be matched at the beggining of
@@ -2415,6 +2452,13 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForNextHopGroup(
     SWSS_LOG_ENTER();
 
     /*
+     * For next hop group, let's try find matching NHG which will be based on
+     * NHG set as SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID in route_entry.  We assume
+     * that each class IPv4 and IPv6 will have different NGH, and each IP
+     * prefix will only be assigned to one NHG.
+     */
+
+    /*
      * First find route entries on which temporary NHG is assigned.
      */
 
@@ -2498,6 +2542,10 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForAclTableGroup(
         _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
 {
     SWSS_LOG_ENTER();
+
+    /*
+     * For acl table group let's try find matching INGRESS_ACL on matched PORT.
+     */
 
     /*
      * Since we know that ports are matched, they have same VID/RID in both
@@ -2629,6 +2677,299 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForAclTableGroup(
     return nullptr;
 }
 
+std::shared_ptr<SaiObj> findCurrentBestMatchForRouterInterface(
+        _In_ const AsicView &currentView,
+        _In_ const AsicView &temporaryView,
+        _In_ const std::shared_ptr<const SaiObj> &temporaryObj,
+        _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * For router interface which is LOOPBACK, we could trace them to TUNNEL
+     * object on which they are used. It could be not obvious, when multiple
+     * tunnels will be used.
+     */
+
+    const auto typeAttr = temporaryObj->getSaiAttr(SAI_ROUTER_INTERFACE_ATTR_TYPE);
+
+    if (typeAttr->getSaiAttr()->value.s32 != SAI_ROUTER_INTERFACE_TYPE_LOOPBACK)
+    {
+        SWSS_LOG_WARN("RIF %s is not LOOPBACK", temporaryObj->str_object_id.c_str());
+
+        return nullptr;
+    }
+
+    const auto tmpTunnels = temporaryView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_TUNNEL);
+
+    for (auto tmpTunnel: tmpTunnels)
+    {
+        /*
+         * Try match tunnel by src encap IP address.
+         */
+
+        if (!tmpTunnel->hasAttr(SAI_TUNNEL_ATTR_ENCAP_SRC_IP))
+        {
+            // not encap src attribute, skip
+            continue;
+        }
+
+        const std::string tmpSrcIP = tmpTunnel->getSaiAttr(SAI_TUNNEL_ATTR_ENCAP_SRC_IP)->getStrAttrValue();
+
+        const auto curTunnels = currentView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_TUNNEL);
+
+        for (auto curTunnel: curTunnels)
+        {
+            if (!tmpTunnel->hasAttr(SAI_TUNNEL_ATTR_ENCAP_SRC_IP))
+            {
+                // not encap src attribute, skip
+                continue;
+            }
+
+            const std::string curSrcIP = tmpTunnel->getSaiAttr(SAI_TUNNEL_ATTR_ENCAP_SRC_IP)->getStrAttrValue();
+
+            if (curSrcIP != tmpSrcIP)
+            {
+                continue;
+            }
+
+            /*
+             * At this point we have both tunnels which ip mathces
+             */
+
+            if (tmpTunnel->hasAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE) &&
+                curTunnel->hasAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE))
+            {
+                auto tmpRif = tmpTunnel->getSaiAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE);
+                auto curRif = curTunnel->getSaiAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE);
+
+                if (tmpRif->getSaiAttr()->value.oid == temporaryObj->getVid())
+                {
+                    for (auto c: candidateObjects)
+                    {
+                        if (c.obj->getVid() != curRif->getSaiAttr()->value.oid)
+                            continue;
+
+                        SWSS_LOG_INFO("found best ROUTER_INTERFACE based on TUNNEL underlay interface %s", c.obj->str_object_id.c_str());
+
+                        return c.obj;
+                    }
+                }
+            }
+
+            if (tmpTunnel->hasAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE) &&
+                curTunnel->hasAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE))
+            {
+                auto tmpRif = tmpTunnel->getSaiAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE);
+                auto curRif = curTunnel->getSaiAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE);
+
+                if (tmpRif->getSaiAttr()->value.oid == temporaryObj->getVid())
+                {
+                    for (auto c: candidateObjects)
+                    {
+                        if (c.obj->getVid() != curRif->getSaiAttr()->value.oid)
+                            continue;
+
+                        SWSS_LOG_INFO("found best ROUTER_INTERFACE based on TUNNEL overlay interface %s", c.obj->str_object_id.c_str());
+
+                        return c.obj;
+                    }
+                }
+            }
+        }
+    }
+
+    SWSS_LOG_NOTICE("failed to find best candidate for LOOPBACK ROUTER_INTERFACE using TUNNEL");
+
+    return nullptr;
+}
+
+std::shared_ptr<SaiObj> findCurrentBestMatchForPolicer(
+        _In_ const AsicView &currentView,
+        _In_ const AsicView &temporaryView,
+        _In_ const std::shared_ptr<const SaiObj> &temporaryObj,
+        _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * For policer we can see on which hostif trap group is set, and on which
+     * hostif trap.  Hostif trap have SAI_HOSTIF_TRAP_ATTR_TRAP_TYPE attribute
+     * which is KEY and there can be only one trap of that type. we can use
+     * that to match hostif trap group and later on policer.
+     *
+     * NOTE: policer can be set on default hostif trap group. In this case we
+     * are getting processed and not processed objects into account.
+     */
+
+    const auto tmpTrapGroups = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_HOSTIF_TRAP_GROUP);
+
+    for (auto tmpTrapGroup: tmpTrapGroups)
+    {
+        auto tmpTrapGroupPolicerAttr = tmpTrapGroup->tryGetSaiAttr(SAI_HOSTIF_TRAP_GROUP_ATTR_POLICER);
+
+        if (tmpTrapGroupPolicerAttr == nullptr)
+        {
+            // no policer attribute
+            continue;
+        }
+
+        if (tmpTrapGroupPolicerAttr->getOid() != temporaryObj->getVid())
+        {
+            // not this policer
+            continue;
+        }
+
+        /*
+         * Found hostif trap group which have this policer, now find hostif
+         * trap type with this trap group.
+         */
+
+        const auto tmpTraps = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_HOSTIF_TRAP);
+
+        for (auto tmpTrap: tmpTraps)
+        {
+            auto tmpTrapGroupAttr = tmpTrap->tryGetSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_GROUP);
+
+            if (tmpTrapGroupAttr == nullptr)
+                continue;
+
+            if (tmpTrapGroupAttr->getOid() != tmpTrapGroup->getVid())
+                continue;
+
+            auto tmpTrapTypeAttr = tmpTrap->getSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_TYPE);
+
+            SWSS_LOG_INFO("trap type: %s", tmpTrapTypeAttr->getStrAttrValue().c_str());
+
+            /*
+             * We have temporary trap type, let's find that trap in current view.
+             */
+
+            const auto curTraps = currentView.getObjectsByObjectType(SAI_OBJECT_TYPE_HOSTIF_TRAP);
+
+            for (auto curTrap: curTraps)
+            {
+                auto curTrapTypeAttr = curTrap->getSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_TYPE);
+
+                if (curTrapTypeAttr->getStrAttrValue() != tmpTrapTypeAttr->getStrAttrValue())
+                    continue;
+
+                /*
+                 * We have that trap, let's extract trap group.
+                 */
+
+                auto curTrapGroupAttr = curTrap->tryGetSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_GROUP);
+
+                if (curTrapGroupAttr == nullptr)
+                    continue;
+
+                sai_object_id_t curTrapGroupVid = curTrapGroupAttr->getOid();
+
+                /*
+                 * If calue is not set, it should point to SAI_SWITCH_ATTR_DEFAULT_TRAP_GROUP
+                 */
+
+                if (curTrapGroupVid == SAI_NULL_OBJECT_ID)
+                    continue;
+
+                auto curTrapGroup = currentView.oOids.at(curTrapGroupVid);
+
+                auto curTrapGroupPolicerAttr = curTrapGroup->tryGetSaiAttr(SAI_HOSTIF_TRAP_GROUP_ATTR_POLICER);
+
+                if (curTrapGroupPolicerAttr == nullptr)
+                {
+                    // no policer attribute
+                    continue;
+                }
+
+                for (auto c: candidateObjects)
+                {
+                    if (c.obj->getVid() != curTrapGroupPolicerAttr->getOid())
+                        continue;
+
+                    SWSS_LOG_INFO("found best POLICER based on hostif trap group %s", c.obj->str_object_id.c_str());
+
+                    return c.obj;
+                }
+            }
+        }
+    }
+
+    SWSS_LOG_NOTICE("failed to find best candidate for POLICER using hostif trap group");
+
+    return nullptr;
+}
+
+std::shared_ptr<SaiObj> findCurrentBestMatchForHostifTrapGroup(
+        _In_ const AsicView &currentView,
+        _In_ const AsicView &temporaryView,
+        _In_ const std::shared_ptr<const SaiObj> &temporaryObj,
+        _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * For hostif trap group we can see on which hostif trap group is set.
+     * Hostif trap have SAI_HOSTIF_TRAP_ATTR_TRAP_TYPE attribute which is KEY
+     * and there can be only one trap of that type. we can use that to match
+     * hostif trap groug.
+     */
+
+    const auto tmpTraps = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_HOSTIF_TRAP);
+
+    for (auto tmpTrap: tmpTraps)
+    {
+        auto tmpTrapGroupAttr = tmpTrap->tryGetSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_GROUP);
+
+        if (tmpTrapGroupAttr == nullptr)
+            continue;
+
+        if (tmpTrapGroupAttr->getOid() != temporaryObj->getVid())
+            continue;
+
+        auto tmpTrapTypeAttr = tmpTrap->getSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_TYPE);
+
+        SWSS_LOG_INFO("trap type: %s", tmpTrapTypeAttr->getStrAttrValue().c_str());
+
+        /*
+         * We have temporary trap type, let's find that trap in current view.
+         */
+
+        const auto curTraps = currentView.getObjectsByObjectType(SAI_OBJECT_TYPE_HOSTIF_TRAP);
+
+        for (auto curTrap: curTraps)
+        {
+            auto curTrapTypeAttr = curTrap->getSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_TYPE);
+
+            if (curTrapTypeAttr->getStrAttrValue() != tmpTrapTypeAttr->getStrAttrValue())
+                continue;
+
+            /*
+             * We have that trap, let's extract trap group.
+             */
+
+            auto curTrapGroupAttr = curTrap->tryGetSaiAttr(SAI_HOSTIF_TRAP_ATTR_TRAP_GROUP);
+
+            if (curTrapGroupAttr == nullptr)
+                continue;
+
+            for (auto c: candidateObjects)
+            {
+                if (c.obj->getVid() != curTrapGroupAttr->getOid())
+                    continue;
+
+                SWSS_LOG_INFO("found best HOSTIF TRAP GROUP based on hostif trap %s", c.obj->str_object_id.c_str());
+
+                return c.obj;
+            }
+        }
+    }
+
+    SWSS_LOG_NOTICE("failed to find best candidate for HOSTIF TRAP GROUP using hostif trap");
+
+    return nullptr;
+}
+
 std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObjectUsingHeuristic(
         _In_ const AsicView &currentView,
         _In_ const AsicView &temporaryView,
@@ -2637,45 +2978,40 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObjectUsingHeuristic(
 {
     SWSS_LOG_ENTER();
 
-    if (temporaryObj->getObjectType() == SAI_OBJECT_TYPE_LAG)
+    std::shared_ptr<SaiObj> candidate = nullptr;
+
+    switch (temporaryObj->getObjectType())
     {
-        /*
-         * For lag, let's try find matching LAG member which will be using the
-         * same port, since we expect that port object can belong only to 1 lag.
-         */
+        case SAI_OBJECT_TYPE_LAG:
+            candidate = findCurrentBestMatchForLag(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
 
-        std::shared_ptr<SaiObj> candidateLag = findCurrentBestMatchForLag(currentView, temporaryView, temporaryObj, candidateObjects);
+        case SAI_OBJECT_TYPE_NEXT_HOP_GROUP:
+            candidate = findCurrentBestMatchForNextHopGroup(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
 
-        if (candidateLag != nullptr)
-            return candidateLag;
+        case SAI_OBJECT_TYPE_ACL_TABLE_GROUP:
+            candidate = findCurrentBestMatchForAclTableGroup(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
+
+        case SAI_OBJECT_TYPE_ROUTER_INTERFACE:
+            candidate = findCurrentBestMatchForRouterInterface(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
+
+        case SAI_OBJECT_TYPE_POLICER:
+            candidate = findCurrentBestMatchForPolicer(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
+
+        case SAI_OBJECT_TYPE_HOSTIF_TRAP_GROUP:
+            candidate = findCurrentBestMatchForHostifTrapGroup(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
+
+        default:
+            break;
     }
 
-    if (temporaryObj->getObjectType() == SAI_OBJECT_TYPE_NEXT_HOP_GROUP)
-    {
-        /*
-         * For next hop group, let's try find matching NHG which will be based on
-         * NHG set as SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID in route_entry.
-         * We assume that each class IPv4 and IPv6 will have different NGH, and
-         * each IP prefix will only be assigned to one NHG.
-         */
-
-        std::shared_ptr<SaiObj> candidateNHG = findCurrentBestMatchForNextHopGroup(currentView, temporaryView, temporaryObj, candidateObjects);
-
-        if (candidateNHG != nullptr)
-            return candidateNHG;
-    }
-
-    if (temporaryObj->getObjectType() == SAI_OBJECT_TYPE_ACL_TABLE_GROUP)
-    {
-        /*
-         * For acl table group let's try find matching INGRESS_ACL on matched PORT.
-         */
-
-        std::shared_ptr<SaiObj> candidateATG = findCurrentBestMatchForAclTableGroup(currentView, temporaryView, temporaryObj, candidateObjects);
-
-        if (candidateATG != nullptr)
-            return candidateATG;
-    }
+    if (candidate != nullptr)
+        return candidate;
 
     /*
      * Idea is to count all dependencies that uses this object.  this may not
@@ -6334,6 +6670,44 @@ sai_status_t asic_process_event(
             sai_serialize_status(status).c_str());
 }
 
+void dumpComparisonLogicOutput(
+        _In_ const AsicView &currentView)
+{
+    SWSS_LOG_ENTER();
+
+    std::stringstream ss;
+
+    ss << "ASIC_OPERATIONS: " << currentView.asicGetOperationsCount() << std::endl;
+
+    for (const auto &op: currentView.asicGetWithOptimizedRemoveOperations())
+    {
+        const std::string &key = kfvKey(*op.op);
+        const std::string &opp = kfvOp(*op.op);
+
+        ss << "o " << opp << ": " << key << std::endl;
+
+        const auto &values = kfvFieldsValues(*op.op);
+
+        for (auto v: values)
+            ss << "a: " << fvField(v) << " " << fvValue(v) << std::endl;
+    }
+
+    std::ofstream log("applyview.log");
+
+    if (log.is_open())
+    {
+        log << ss.str();
+
+        log.close();
+
+        SWSS_LOG_NOTICE("wrote apply_view asic operations to applyview.log");
+    }
+    else
+    {
+        SWSS_LOG_ERROR("failed to open applyview.log");
+    }
+}
+
 void executeOperationsOnAsic(
         _In_ AsicView &currentView,
         _In_ AsicView &temporaryView)
@@ -6348,6 +6722,9 @@ void executeOperationsOnAsic(
 
         SWSS_LOG_TIMER("asic apply");
 
+        if (enableUnittests())
+            dumpComparisonLogicOutput(currentView);
+
         if (enableRefernceCountLogs)
         {
             currentView.dumpVidToAsicOperatioId();
@@ -6360,6 +6737,13 @@ void executeOperationsOnAsic(
                 const std::string &opp = kfvOp(*op.op);
 
                 SWSS_LOG_WARN("%s: %s", opp.c_str(), key.c_str());
+
+                const auto &values = kfvFieldsValues(*op.op);
+
+                for (auto v: values)
+                {
+                    SWSS_LOG_WARN("- %s %s", fvField(v).c_str(), fvValue(v).c_str());
+                }
             }
 
             SWSS_LOG_NOTICE("optimized operations!");
