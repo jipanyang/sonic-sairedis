@@ -2054,6 +2054,55 @@ bool hasEqualObjectList(
 }
 
 /**
+ * @brief Compare qos map list attributes order insensitive.
+ *
+ * @param current Current object qos map attribute.
+ * @param temporary Temporary object qos map attribute.
+ *
+ * @return True if attributes are equal, false otherwise.
+ */
+bool hasEqualQosMapList(
+        _In_ const std::shared_ptr<const SaiAttr> &current,
+        _In_ const std::shared_ptr<const SaiAttr> &temporary)
+{
+    SWSS_LOG_ENTER();
+
+    auto c = current->getSaiAttr()->value.qosmap;
+    auto t = temporary->getSaiAttr()->value.qosmap;
+
+    if (c.count != t.count)
+        return false;
+
+    if (c.list == NULL || t.list == NULL)
+        return false;
+
+    std::vector<std::string> citems;
+    std::vector<std::string> titems;
+
+    for (uint32_t i = 0; i < c.count; i++)
+    {
+        citems.push_back(sai_serialize_qos_map_item(c.list[i]));
+        titems.push_back(sai_serialize_qos_map_item(t.list[i]));
+    }
+
+    std::sort(citems.begin(), citems.end());
+    std::sort(titems.begin(), titems.end());
+
+    for (uint32_t i = 0; i < c.count; i++)
+    {
+        if (citems.at(i) != titems.at(i))
+        {
+            return false;
+        }
+    }
+
+    SWSS_LOG_NOTICE("qos map are equal, but has different order");
+
+    // all items in both attributes are equal
+    return true;
+}
+
+/**
  * @brief Check if current and temporary object has
  * the same attribute and attribute has the same value on both.
  *
@@ -2115,6 +2164,16 @@ bool hasEqualAttribute(
              */
 
             return true;
+        }
+
+        if (currentAttr->getAttrMetadata()->attrvaluetype == SAI_ATTR_VALUE_TYPE_QOS_MAP_LIST)
+        {
+            /*
+             * In case of qos map list, order of list does not matter, so
+             * compare only entries.
+             */
+
+            return hasEqualQosMapList(currentAttr, temporaryAttr);
         }
 
         if (currentAttr->isObjectIdAttr() == false)
@@ -2582,8 +2641,8 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForAclTableGroup(
             if (c.obj->getVid() == atgVid)
             {
                 SWSS_LOG_INFO("found ALC table group candidate %s using port %s",
-                        port->str_object_id.c_str(),
-                        c.obj->str_object_id.c_str());
+                        c.obj->str_object_id.c_str(),
+                        port->str_object_id.c_str());
 
                 return c.obj;
             }
@@ -2673,6 +2732,101 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForAclTableGroup(
     }
 
     SWSS_LOG_NOTICE("failed to find best candidate for ACL table group using port");
+
+    return nullptr;
+}
+
+std::shared_ptr<SaiObj> findCurrentBestMatchForAclTable(
+        _In_ const AsicView &currentView,
+        _In_ const AsicView &temporaryView,
+        _In_ const std::shared_ptr<const SaiObj> &temporaryObj,
+        _In_ const std::vector<sai_object_compare_info_t> &candidateObjects)
+{
+    SWSS_LOG_ENTER();
+
+    /*
+     * For acl table we can go to acl table group member and then to acl table group and port.
+     */
+
+    const auto tmpAclTableGroupMembers = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_ACL_TABLE_GROUP_MEMBER);
+
+    for (auto tmpAclTableGroupMember: tmpAclTableGroupMembers)
+    {
+        auto tmpAclTableId = tmpAclTableGroupMember->getSaiAttr(SAI_ACL_TABLE_GROUP_MEMBER_ATTR_ACL_TABLE_ID);
+
+        if (tmpAclTableId->getOid() != temporaryObj->getVid())
+        {
+            // this is not the expected alc table group member
+            continue;
+        }
+
+        auto tmpAclTableGroupId = tmpAclTableGroupMember->getSaiAttr(SAI_ACL_TABLE_GROUP_MEMBER_ATTR_ACL_TABLE_GROUP_ID);
+
+        /*
+         * We have acl table group id, search on which port it's set, not let's
+         * find on which port it's set.
+         */
+
+        const auto tmpPorts = temporaryView.getObjectsByObjectType(SAI_OBJECT_TYPE_PORT);
+
+        for (auto tmpPort: tmpPorts)
+        {
+            if (!tmpPort->hasAttr(SAI_PORT_ATTR_INGRESS_ACL))
+                continue;
+
+            auto tmpInACL = tmpPort->getSaiAttr(SAI_PORT_ATTR_INGRESS_ACL);
+
+            if (tmpInACL->getOid() != tmpAclTableGroupId->getOid())
+                continue;
+
+            auto curPort = currentView.oOids.at(tmpPort->getVid());
+
+            if (!curPort->hasAttr(SAI_PORT_ATTR_INGRESS_ACL))
+                continue;
+
+            auto curInACL = curPort->getSaiAttr(SAI_PORT_ATTR_INGRESS_ACL);
+
+            /*
+             * We found current InACL, now let's find acl table group members
+             * that use this acl table group.
+             */
+
+            const auto curAclTableGroupMembers = currentView.getObjectsByObjectType(SAI_OBJECT_TYPE_ACL_TABLE_GROUP_MEMBER);
+
+            for (auto curAclTableGroupMember: curAclTableGroupMembers)
+            {
+                auto curAclTableGroupId = curAclTableGroupMember->getSaiAttr(SAI_ACL_TABLE_GROUP_MEMBER_ATTR_ACL_TABLE_GROUP_ID);
+
+                if (curAclTableGroupId->getOid() != curInACL->getOid())
+                {
+                    // this member uses different acl table group
+                    continue;
+                }
+
+                auto curAclTableId = curAclTableGroupMember->getSaiAttr(SAI_ACL_TABLE_GROUP_MEMBER_ATTR_ACL_TABLE_ID);
+
+                /*
+                 * We found possible current acl table ID, let's see if it's on
+                 * candidate list. Note, it could be possible that many
+                 * different paths will lead multiple possible candidates.
+                 */
+
+                for (auto c: candidateObjects)
+                {
+                    if (c.obj->getVid() == curAclTableId->getOid())
+                    {
+                        SWSS_LOG_INFO("found ALC table candidate %s using port %s",
+                                c.obj->str_object_id.c_str(),
+                                tmpPort->str_object_id.c_str());
+
+                        return c.obj;
+                    }
+                }
+            }
+        }
+    }
+
+    SWSS_LOG_NOTICE("failed to find best candidate for ACL table using port");
 
     return nullptr;
 }
@@ -2773,6 +2927,95 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForRouterInterface(
                         SWSS_LOG_INFO("found best ROUTER_INTERFACE based on TUNNEL overlay interface %s", c.obj->str_object_id.c_str());
 
                         return c.obj;
+                    }
+                }
+            }
+        }
+    }
+
+    // try find tunnel by TUNNEL_TERM_TABLE_ENTRY using SAI_TUNNEL_TERM_TABLE_ENTRY_ATTR_DST_IP
+
+    for (auto tmpTunnel: tmpTunnels)
+    {
+        const auto curTunnels = currentView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_TUNNEL);
+
+        for (auto curTunnel: curTunnels)
+        {
+            const auto tmpTunnelTermTableEtnries = temporaryView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_TUNNEL_TERM_TABLE_ENTRY);
+
+            for (auto tmpTunnelTermTableEntry: tmpTunnelTermTableEtnries)
+            {
+                auto tmpTunnelId = tmpTunnelTermTableEntry->tryGetSaiAttr(SAI_TUNNEL_TERM_TABLE_ENTRY_ATTR_ACTION_TUNNEL_ID);
+
+                if (tmpTunnelId == nullptr)
+                    continue;
+
+                auto tmpDstIp = tmpTunnelTermTableEntry->tryGetSaiAttr(SAI_TUNNEL_TERM_TABLE_ENTRY_ATTR_DST_IP);
+
+                if (tmpDstIp == nullptr)
+                    continue;
+
+                if (tmpTunnelId->getOid() != tmpTunnel->getVid())   // not this tunnel
+                    continue;
+
+                const auto curTunnelTermTableEtnries = currentView.getNotProcessedObjectsByObjectType(SAI_OBJECT_TYPE_TUNNEL_TERM_TABLE_ENTRY);
+
+                for (auto curTunnelTermTableEntry: curTunnelTermTableEtnries)
+                {
+                    auto curTunnelId = curTunnelTermTableEntry->tryGetSaiAttr(SAI_TUNNEL_TERM_TABLE_ENTRY_ATTR_ACTION_TUNNEL_ID);
+
+                    if (curTunnelId == nullptr)
+                        continue;
+
+                    auto curDstIp = curTunnelTermTableEntry->tryGetSaiAttr(SAI_TUNNEL_TERM_TABLE_ENTRY_ATTR_DST_IP);
+
+                    if (curDstIp == nullptr)
+                        continue;
+
+                    if (curTunnelId->getOid() != curTunnel->getVid())   // not this tunnel
+                        continue;
+
+                    if (curDstIp->getStrAttrValue() != tmpDstIp->getStrAttrValue())
+                        continue;
+
+                    if (tmpTunnel->hasAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE) &&
+                            curTunnel->hasAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE))
+                    {
+                        auto tmpRif = tmpTunnel->getSaiAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE);
+                        auto curRif = curTunnel->getSaiAttr(SAI_TUNNEL_ATTR_UNDERLAY_INTERFACE);
+
+                        if (tmpRif->getSaiAttr()->value.oid == temporaryObj->getVid())
+                        {
+                            for (auto c: candidateObjects)
+                            {
+                                if (c.obj->getVid() != curRif->getSaiAttr()->value.oid)
+                                    continue;
+
+                                SWSS_LOG_INFO("found best ROUTER_INTERFACE based on TUNNEL underlay interface %s", c.obj->str_object_id.c_str());
+
+                                return c.obj;
+                            }
+                        }
+                    }
+
+                    if (tmpTunnel->hasAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE) &&
+                            curTunnel->hasAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE))
+                    {
+                        auto tmpRif = tmpTunnel->getSaiAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE);
+                        auto curRif = curTunnel->getSaiAttr(SAI_TUNNEL_ATTR_OVERLAY_INTERFACE);
+
+                        if (tmpRif->getSaiAttr()->value.oid == temporaryObj->getVid())
+                        {
+                            for (auto c: candidateObjects)
+                            {
+                                if (c.obj->getVid() != curRif->getSaiAttr()->value.oid)
+                                    continue;
+
+                                SWSS_LOG_INFO("found best ROUTER_INTERFACE based on TUNNEL overlay interface %s", c.obj->str_object_id.c_str());
+
+                                return c.obj;
+                            }
+                        }
                     }
                 }
             }
@@ -3006,6 +3249,10 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObjectUsingHeuristic(
             candidate = findCurrentBestMatchForHostifTrapGroup(currentView, temporaryView, temporaryObj, candidateObjects);
             break;
 
+        case SAI_OBJECT_TYPE_ACL_TABLE:
+            candidate = findCurrentBestMatchForAclTable(currentView, temporaryView, temporaryObj, candidateObjects);
+            break;
+
         default:
             break;
     }
@@ -3054,6 +3301,10 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObjectUsingHeuristic(
 
     return selectRandomCandidate(candidateObjects);
 }
+
+std::shared_ptr<SaiAttr> getSaiAttrFromDefaultValue(
+        _In_ const AsicView &currentView,
+        _In_ const sai_attr_metadata_t &meta);
 
 std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObject(
         _In_ const AsicView &currentView,
@@ -3166,6 +3417,13 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObject(
 
         bool has_different_create_only_attr = false;
 
+        /*
+         * NOTE: we only iterate by attributes that are present in temporary
+         * view. It may happen that current view has some additional attributes
+         * set that are create only and value can't be updated then, so in that
+         * case such object must be disqualified from being candidate.
+         */
+
         for (const auto &attr: attrs)
         {
             sai_attr_id_t attrId = attr.first;
@@ -3229,6 +3487,85 @@ std::shared_ptr<SaiObj> findCurrentBestMatchForGenericObject(
                      */
 
                     break;
+                }
+
+                if (SAI_HAS_FLAG_CREATE_ONLY(meta->flags) && !currentObj->hasAttr(attrId))
+                {
+                    /*
+                     * This attribute exists only on temporary view and it's
+                     * create only.  If it has default value, check if it's the
+                     * same as current.
+                     */
+
+                    auto curDefault = getSaiAttrFromDefaultValue(currentView, *meta);
+
+                    if (curDefault != nullptr)
+                    {
+                        if (curDefault->getStrAttrValue() != attr.second->getStrAttrValue())
+                        {
+                            has_different_create_only_attr = true;
+
+                            SWSS_LOG_INFO("obj has not equal create only attributes %s (default): %s",
+                                    temporaryObj->str_object_id.c_str(),
+                                    meta->attridname);
+                            break;
+                        }
+                        else
+                        {
+                            SWSS_LOG_INFO("obj has equal create only value %s (default): %s",
+                                    temporaryObj->str_object_id.c_str(),
+                                    meta->attridname);
+                        }
+                    }
+                }
+            }
+        }
+
+        /*
+         * Before we add this object as candidate, see if there are some create
+         * only attributes which are not present in temporary object but
+         * present in current, and if there is default value that is the same.
+         */
+
+        const auto curAttrs = currentObj->getAllAttributes();
+
+        for (auto curAttr: curAttrs)
+        {
+            if (attrs.find(curAttr.first) != attrs.end())
+            {
+                // attr exists in both objects.
+                continue;
+            }
+
+            const sai_attr_metadata_t* meta = curAttr.second->getAttrMetadata();
+
+            if (SAI_HAS_FLAG_CREATE_ONLY(meta->flags) && !temporaryObj->hasAttr(curAttr.first))
+            {
+                /*
+                 * This attribute exists only on current view and it's
+                 * create only.  If it has default value, check if it's the
+                 * same as current.
+                 */
+
+                auto tmpDefault = getSaiAttrFromDefaultValue(temporaryView, *meta);
+
+                if (tmpDefault != nullptr)
+                {
+                    if (tmpDefault->getStrAttrValue() != curAttr.second->getStrAttrValue())
+                    {
+                        has_different_create_only_attr = true;
+
+                        SWSS_LOG_INFO("obj has not equal create only attributes %s (default): %s",
+                                currentObj->str_object_id.c_str(),
+                                meta->attridname);
+                        break;
+                    }
+                    else
+                    {
+                        SWSS_LOG_INFO("obj has equal create only value %s (default): %s",
+                                temporaryObj->str_object_id.c_str(),
+                                meta->attridname);
+                    }
                 }
             }
         }
@@ -3870,10 +4207,6 @@ void procesObjectAttributesForViewTransition(
         processObjectForViewTransition(currentView, temporaryView, structObject); // recursion
     }
 }
-
-std::shared_ptr<SaiAttr> getSaiAttrFromDefaultValue(
-        _In_ const AsicView &currentView,
-        _In_ const sai_attr_metadata_t &meta);
 
 void bringNonRemovableObjectToDefaultState(
         _In_ AsicView &currentView,
@@ -4737,6 +5070,14 @@ std::shared_ptr<SaiAttr> getSaiAttrFromDefaultValue(
 
             return nullptr;
 
+        case SAI_DEFAULT_VALUE_TYPE_NONE:
+
+            /*
+             * No default value present.
+             */
+
+            return nullptr;
+
         default:
 
             SWSS_LOG_ERROR("default value type %d is not supported yet for %s, FIXME",
@@ -5330,6 +5671,8 @@ void processObjectForViewTransition(
 
         return;
     }
+
+    SWSS_LOG_DEBUG("processing: %s:%s", temporaryObj->str_object_type.c_str(), temporaryObj->str_object_id.c_str());
 
     procesObjectAttributesForViewTransition(currentView, temporaryView, temporaryObj);
 

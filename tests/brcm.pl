@@ -240,8 +240,63 @@ sub test_brcm_full_testbed_config
     play "full_testbed_config.rec", 0;
 }
 
+sub test_brcm_rif_loopback
+{
+    fresh_start;
+
+    # we expect no asic operation on router interface
+
+    play "rif_loopback.rec";
+    play "rif_loopback.rec", 0;
+    play "rif_loopback.rec", 0;
+    play "rif_loopback.rec", 0;
+    play "rif_loopback.rec", 0;
+    play "rif_loopback.rec", 0;
+}
+
+sub test_brcm_lag_no_members
+{
+    fresh_start;
+
+    # we expect no asic operation on lag's that has no members
+
+    play "lag_no_members.rec";
+    play "lag_no_members.rec", 0;
+    play "lag_no_members.rec", 0;
+    play "lag_no_members.rec", 0;
+    play "lag_no_members.rec", 0;
+    play "lag_no_members.rec", 0;
+}
+
+sub test_brcm_qos_map_order
+{
+    fresh_start;
+
+    # we expect no asic operation on qos maps that are the same but different order
+
+    play "qos_map_order.rec", 0;
+}
+
+sub test_brcm_acl_tables
+{
+    fresh_start;
+
+    # we expect no asic operation on lag's that has no members
+
+    play "acl_tables.rec";
+    play "acl_tables.rec", 0;
+    play "acl_tables.rec", 0;
+    play "acl_tables.rec", 0;
+    play "acl_tables.rec", 0;
+    play "acl_tables.rec", 0;
+}
+
 # RUN TESTS
 
+test_brcm_acl_tables;
+test_brcm_qos_map_order;
+test_brcm_lag_no_members;
+test_brcm_rif_loopback;
 test_brcm_hostif;
 test_brcm_full_testbed_config;
 test_brcm_remove_next_hop;
