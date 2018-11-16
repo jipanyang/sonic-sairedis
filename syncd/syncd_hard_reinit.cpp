@@ -8,8 +8,8 @@
 
 /*
  * To support multiple switches here we need to refactor this to a class
- * similar to SaiSwitch, and then have separate vid/rid map and ecah class will
- * be recreating only one switch and handling that
+ * similar to SaiSwitch, and then have separate vid/rid map and each class will
+ * be recreating only one switch and handling that.
  */
 
 typedef std::unordered_map<std::string, std::string> StringHash;
@@ -47,12 +47,10 @@ static sai_object_id_t g_switch_vid = SAI_NULL_OBJECT_ID;
 
 static std::shared_ptr<SaiSwitch> g_sw;
 
-#ifdef SAITHRIFT
 /*
  * SAI switch global needed for RPC server
  */
 extern sai_object_id_t gSwitchId;
-#endif
 
 void processAttributesForOids(
         _In_ sai_object_type_t objectType,
@@ -227,8 +225,8 @@ void checkAllIds()
      * Now we must check whether we need to remove some objects like VLAN
      * members etc.
      *
-     * TODO: Should this be done at start, before other oprations?
-     * We are able to determine which objets are missing from rid map
+     * TODO: Should this be done at start, before other operations?
+     * We are able to determine which objects are missing from rid map
      * as long as id's between restart don't change.
      */
 
@@ -248,7 +246,7 @@ void checkAllIds()
      * hold all id's, it only will hold defaults. But this swill mean, that we
      * need to remove those VLAN members from ASIC.
      *
-     * We could just call discover again, but thats too long, we just needto
+     * We could just call discover again, but that's too long, we just need to
      * remove removed objects since we need Existing objects for ApplyView.
      *
      * Order matters here, we can't remove bridge before removing all bridge
@@ -266,7 +264,7 @@ void checkAllIds()
 
     for (sai_object_type_t ot: removeOrder)
     {
-        for (sai_object_id_t rid: g_sw->getExistingObjects())
+        for (sai_object_id_t rid: g_sw->getDiscoveredRids())
         {
             if (g_translatedR2V.find(rid) != g_translatedR2V.end())
             {
@@ -277,6 +275,20 @@ void checkAllIds()
                     ot == SAI_OBJECT_TYPE_NULL)
             {
                 g_sw->removeExistingObject(rid);
+
+                /*
+                 * If removing existing object, also make sure we remove it
+                 * from COLDVIDS map since this object will no longer exists.
+                 */
+
+                if (g_ridToVidMap.find(rid) == g_ridToVidMap.end())
+                    continue;
+
+                std::string strVid = sai_serialize_object_id(g_ridToVidMap.at(rid));
+
+                SWSS_LOG_INFO("removing existing VID: %s", strVid.c_str());
+
+                g_redisClient->hdel(COLDVIDS, strVid);
             }
         }
     }
@@ -328,7 +340,7 @@ void processSwitches()
 
     /*
      * Sanity check in metadata make sure that there are no mandatory on create
-     * and create only attributes that are obejct id attributes, sinec we would
+     * and create only attributes that are object id attributes, since we would
      * need create those objects first but we need switch first. So here we
      * selecting only MANDATORY_ON_CREATE and CREATE_ONLY attributes to create
      * switch.
@@ -425,10 +437,8 @@ void processSwitches()
 
         sai_status_t status = sai_metadata_sai_switch_api->create_switch(&switch_rid, attr_count, attr_list);
 
-#ifdef SAITHRIFT
         gSwitchId = switch_rid;
         SWSS_LOG_NOTICE("Initialize gSwitchId with ID = 0x%lx", gSwitchId);
-#endif
 
         if (status != SAI_STATUS_SUCCESS)
         {
@@ -444,6 +454,11 @@ void processSwitches()
 
         g_translatedV2R[switch_vid] = switch_rid;
         g_translatedR2V[switch_rid] = switch_vid;
+
+        /*
+         * SaiSwitch class object must be created before before any other
+         * object, so when doing discover we will get full default ASIC view.
+         */
 
         auto sw = switches[switch_vid] = std::make_shared<SaiSwitch>(switch_vid, switch_rid);
 
@@ -621,7 +636,7 @@ sai_object_id_t processSingleVid(
 
     /*
      * Now let's determine whether this object need to be created.  Default
-     * obejcts like default virtual router, queues or cpu can't be created.
+     * objects like default virtual router, queues or cpu can't be created.
      * When object exists on the switch (even VLAN member) it will not be
      * created, but matched. We just need to watch for RO/CO attributes.
      *
@@ -638,7 +653,7 @@ sai_object_id_t processSingleVid(
 
     sai_object_id_t rid;
 
-    if (g_sw->isDefaultCreatedRid(v2rMapIt->second))
+    if (g_sw->isDiscoveredRid(v2rMapIt->second))
     {
         rid = v2rMapIt->second;
 
@@ -738,14 +753,14 @@ sai_object_id_t processSingleVid(
             {
                 /*
                  * If we will be performing this on default existing created
-                 * object then it may happen taht during snoop in previous
+                 * object then it may happen that during snoop in previous
                  * iteration we put some attribute that is create only, then
                  * this set will fail and we need to skip this set.
                  *
                  * NOTE: We could do get here to see if it actually matches.
                  */
 
-                if (g_sw->isDefaultCreatedRid(rid))
+                if (g_sw->isDiscoveredRid(rid))
                 {
                     continue;
                 }
@@ -1097,8 +1112,8 @@ void readAsicState()
      */
 
     /*
-     * To support multiple switchies this needs to be refactores since we need
-     * a class with hard reinit, per switch
+     * To support multiple switches this needs to be refactored since we need
+     * a class with hard reinit, per switch.
      */
 
     g_vidToRidMap = redisGetVidToRidMap();
@@ -1164,7 +1179,7 @@ void hardReinit()
     processSwitches();
 
     {
-        SWSS_LOG_TIMER("processing objects after switch create");
+        //SWSS_LOG_TIMER("processing objects after switch create");
 
         processFdbs();
         processNeighbors();
@@ -1210,7 +1225,7 @@ void performWarmRestart()
 
     /*
      * There should be no case when we are doing warm restart and there is no
-     * switch defined, we will throw at sucha case.
+     * switch defined, we will throw at such a case.
      *
      * This case could be possible when no switches were created and only api
      * was initialized, but we will skip this scenario and address is when we
@@ -1230,7 +1245,7 @@ void performWarmRestart()
     }
 
     /*
-     * Here wa have only one switch defined, let's extract his vid and rid.
+     * Here we have only one switch defined, let's extract his vid and rid.
      */
 
     /*
@@ -1297,6 +1312,13 @@ void performWarmRestart()
     g_switch_vid = switch_vid;
 
     g_sw = sw;
+
+    /*
+     * Populate gSwitchId since it's needed if we want to make multiple warm
+     * starts in a row.
+     */
+
+    gSwitchId = g_switch_rid;
 
     startDiagShell();
 }

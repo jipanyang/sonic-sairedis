@@ -83,7 +83,7 @@ static bool meta_unittests_get_and_erase_set_readonly_flag(
 
     if (!unittests_enabled)
     {
-        // explicityly  to not produce false alarms
+        // explicitly to not produce false alarms
         SWSS_LOG_NOTICE("unittests are not enabled");
         return false;
     }
@@ -192,8 +192,8 @@ class SaiAttrWrapper
             SWSS_LOG_ENTER();
 
             /*
-             * On destructor we need to call free to dealocate possible
-             * alocated list on constructor.
+             * On destructor we need to call free to deallocate possible
+             * allocated list on constructor.
              */
 
             sai_deserialize_free_attribute_value(m_meta->attrvaluetype, m_attr);
@@ -220,7 +220,7 @@ std::string get_attr_info(const sai_attr_metadata_t& md)
 
     /*
      * Attribute name will contain object type as well so we don't need to
-     * serialize object type separatly.
+     * serialize object type separately.
      */
 
     return std::string(md.attridname) + ":" + sai_serialize_attr_value_type(md.attrvaluetype);
@@ -596,7 +596,7 @@ sai_status_t meta_generic_validation_objlist(
     }
 
     /*
-     * We need oids set and object type to check whehter oids are not repeated
+     * We need oids set and object type to check whether oids are not repeated
      * on list and whether all oids are same object type.
      */
 
@@ -741,7 +741,7 @@ std::string construct_key(
     SWSS_LOG_ENTER();
 
     /*
-     * Use map to make sure that keys will be always sorded by id.
+     * Use map to make sure that keys will be always sorted by id.
      */
 
     std::map<int32_t, std::string> keys;
@@ -878,9 +878,9 @@ sai_status_t meta_generic_validate_non_object_on_create(
 
     /*
      * Since non object id objects can contain several object id's inside
-     * object id strucutre, we need to check whether they all belong to the
+     * object id structure, we need to check whether they all belong to the
      * same switch (sine multiple switches can be present and whether all those
-     * objects are allowd respectivly on their members.
+     * objects are allowed respectively on their members.
      *
      * This check is required only on creation, since on set/get/remove we
      * check in object hash whether this object exists.
@@ -894,7 +894,7 @@ sai_status_t meta_generic_validate_non_object_on_create(
     }
 
     /*
-     * This will be most utilzed for createing route entries.
+     * This will be most utilized for creating route entries.
      */
 
     for (size_t j = 0; j < info->structmemberscount; ++j)
@@ -1075,7 +1075,7 @@ sai_status_t meta_generic_validation_create(
 
     bool haskeys = false;
 
-    // check each attribute separetly
+    // check each attribute separately
     for (uint32_t idx = 0; idx < attr_count; ++idx)
     {
         const sai_attribute_t* attr = &attr_list[idx];
@@ -1468,7 +1468,7 @@ sai_status_t meta_generic_validation_create(
         return SAI_STATUS_FAILURE;
     }
 
-    // check if all mandatory attrributes were passed
+    // check if all mandatory attributes were passed
 
     for (auto mdp: metadata)
     {
@@ -1588,7 +1588,7 @@ sai_status_t meta_generic_validation_create(
         {
             const auto& c = *md.conditions[index];
 
-            // condtions may only be on the same object type
+            // conditions may only be on the same object type
             const auto& cmd = *sai_metadata_get_attr_metadata(meta_key.objecttype, c.attrid);
 
             const sai_attribute_value_t* cvalue = cmd.defaultvalue;
@@ -1745,6 +1745,21 @@ sai_status_t meta_generic_validation_remove(
 
     if (count != 0)
     {
+        if (object_type == SAI_OBJECT_TYPE_SWITCH)
+        {
+            /*
+             * We allow to remove switch object even if there are ROUTE_ENTRY
+             * created and referencing this switch, since remove could be used
+             * in WARM boot scenario.
+             */
+
+            SWSS_LOG_WARN("removing switch object 0x%lx reference count is %d, removing all objects from meta DB", oid, count);
+
+            meta_init_db();
+
+            return SAI_STATUS_SUCCESS;
+        }
+
         SWSS_LOG_ERROR("object 0x%lx reference count is %d, can't remove", oid, count);
 
         return SAI_STATUS_INVALID_PARAMETER;
@@ -2240,7 +2255,7 @@ sai_status_t meta_generic_validation_get(
              * attribute also oid, and then did a "set" on that value, and now
              * reference is not decreased since previous oid was not snooped.
              *
-             * TODO This concearn all attributes not only conditionals
+             * TODO This concern all attributes not only conditionals
              *
              * If attribute is conditional, we need to check if condition is
              * met, if not then this attribute is not mandatory so we can
@@ -2470,53 +2485,15 @@ sai_status_t meta_generic_validation_get(
     return SAI_STATUS_SUCCESS;
 }
 
-template <typename T>
-sai_status_t meta_generic_validation_get_stats(
-        _In_ const sai_object_meta_key_t& meta_key,
-        _In_ uint32_t count,
-        _In_ const T *counter_id_list,
-        _In_ const uint64_t *counter_list)
+bool warmBoot = false;
+
+void meta_warm_boot_notify()
 {
     SWSS_LOG_ENTER();
 
-    if (meta_unittests_enabled() && (count & 0x80000000))
-    {
-        /*
-         * If last bit of counters count is set to high, and unittests are enabled,
-         * then this api can be used to SET counter values by user for debugging purposes.
-         */
-        count = count & ~0x80000000;
-    }
+    warmBoot = true;
 
-    if (count < 1)
-    {
-        SWSS_LOG_ERROR("expected at least 1 stat when calling get_stats, zero given");
-
-        return SAI_STATUS_INVALID_PARAMETER;
-    }
-
-    if (count > MAX_LIST_COUNT)
-    {
-        SWSS_LOG_ERROR("get stats count %u > max list count %u", count, MAX_LIST_COUNT);
-
-        return SAI_STATUS_INVALID_PARAMETER;
-    }
-
-    if (counter_id_list == NULL)
-    {
-        SWSS_LOG_ERROR("counter id list pointer is NULL");
-
-        return SAI_STATUS_INVALID_PARAMETER;
-    }
-
-    if (counter_list == NULL)
-    {
-        SWSS_LOG_ERROR("counter list pointer is NULL");
-
-        return SAI_STATUS_INVALID_PARAMETER;
-    }
-
-    return SAI_STATUS_SUCCESS;
+    SWSS_LOG_NOTICE("warmBoot = true");
 }
 
 void meta_generic_validation_post_create(
@@ -2531,12 +2508,26 @@ void meta_generic_validation_post_create(
 
     if (object_exists(key))
     {
-        SWSS_LOG_ERROR("object key %s already exists (vendor bug?)", key.c_str());
+        if (warmBoot && meta_key.objecttype == SAI_OBJECT_TYPE_SWITCH)
+        {
+            SWSS_LOG_NOTICE("post switch create after WARM BOOT");
+        }
+        else
+        {
+            SWSS_LOG_ERROR("object key %s already exists (vendor bug?)", key.c_str());
 
-        // this may produce inconsistency
+            // this may produce inconsistency
+        }
     }
 
-    create_object(meta_key);
+    if (warmBoot && meta_key.objecttype == SAI_OBJECT_TYPE_SWITCH)
+    {
+        SWSS_LOG_NOTICE("skipping create switch on WARM BOOT since it was already created");
+    }
+    else
+    {
+        create_object(meta_key);
+    }
 
     auto info = sai_metadata_get_object_type_info(meta_key.objecttype);
 
@@ -2615,9 +2606,23 @@ void meta_generic_validation_post_create(
                 }
             }
 
-            object_reference_insert(oid);
+            if (warmBoot && meta_key.objecttype == SAI_OBJECT_TYPE_SWITCH)
+            {
+                SWSS_LOG_NOTICE("skip insert switch reference insert in WARM_BOOT");
+            }
+            else
+            {
+                object_reference_insert(oid);
+            }
 
         } while (false);
+    }
+
+    if (warmBoot)
+    {
+        SWSS_LOG_NOTICE("warmBoot = false");
+
+        warmBoot = false;
     }
 
     bool haskeys;
@@ -2767,6 +2772,16 @@ void meta_generic_validation_post_remove(
         _In_ const sai_object_meta_key_t& meta_key)
 {
     SWSS_LOG_ENTER();
+
+    if (meta_key.objecttype == SAI_OBJECT_TYPE_SWITCH)
+    {
+        /*
+         * If switch object was removed then meta db was cleared and there are
+         * no other attributes, no need for reference counting.
+         */
+
+        return;
+    }
 
     // get all attributes that was set
 
@@ -3165,7 +3180,7 @@ void meta_generic_validation_post_get_objlist(
      * when we doing get on acl field/action. But none of those are created
      * internally by switch.
      *
-     * TODO Similar stuff is with SET, when we will set oid obejct on existing
+     * TODO Similar stuff is with SET, when we will set oid object on existing
      * switch object, but we will not have it's previous value.  We can check
      * whether default value is present and it's const NULL.
      */
@@ -3234,7 +3249,7 @@ void meta_generic_validation_post_get_objlist(
         if (!object_reference_exists(oid))
         {
             // NOTE: there may happen that user will request multiple object lists
-            // and first list was retrived ok, but second failed with overflow
+            // and first list was retrieved ok, but second failed with overflow
             // then we may forget to snoop
 
             META_LOG_INFO(md, "returned get object on list [%u] oid 0x%lx object type %d does not exists in local DB (snoop)", i, oid, ot);
@@ -3282,7 +3297,7 @@ void meta_generic_validation_post_get(
     switch_id = meta_extract_switch_id(meta_key, switch_id);
 
     /*
-     * TODO We should snoop attributes retrived from switch and put them to
+     * TODO We should snoop attributes retrieved from switch and put them to
      * local db if they don't exist since if attr is oid it may lead to
      * inconsistency when counting reference
      */
@@ -5505,7 +5520,7 @@ sai_status_t meta_sai_validate_oid(
 
     if (oid == SAI_NULL_OBJECT_ID)
     {
-        SWSS_LOG_ERROR("oid is set to null object id");
+        SWSS_LOG_ERROR("oid is set to null object id on %s", otname);
 
         return SAI_STATUS_INVALID_PARAMETER;
     }
@@ -5759,18 +5774,88 @@ sai_status_t meta_sai_get_oid(
     return status;
 }
 
-template <typename T>
-sai_status_t meta_sai_get_stats_oid(
-        _In_ sai_object_type_t object_type,
-        _In_ sai_object_id_t object_id,
+// STATS
+
+sai_status_t meta_generic_validation_get_stats(
+        _In_ const sai_object_meta_key_t& meta_key,
+        _In_ const sai_enum_metadata_t* stats_enum,
         _In_ uint32_t count,
-        _In_ const T* counter_id_list,
-        _Out_ uint64_t *counter_list,
-        _In_ sai_get_generic_stats_fn<T> get)
+        _In_ const int32_t *counter_id_list,
+        _In_ const uint64_t *counter_list)
 {
     SWSS_LOG_ENTER();
 
-    sai_status_t status = meta_sai_validate_oid(object_type, &object_id, SAI_NULL_OBJECT_ID, false);
+    if (meta_unittests_enabled() && (count & 0x80000000))
+    {
+        /*
+         * If last bit of counters count is set to high, and unittests are enabled,
+         * then this api can be used to SET counter values by user for debugging purposes.
+         */
+        count = count & ~0x80000000;
+    }
+
+    if (count < 1)
+    {
+        SWSS_LOG_ERROR("expected at least 1 stat when calling get_stats, zero given");
+
+        return SAI_STATUS_INVALID_PARAMETER;
+    }
+
+    if (count > MAX_LIST_COUNT)
+    {
+        SWSS_LOG_ERROR("get stats count %u > max list count %u", count, MAX_LIST_COUNT);
+
+        return SAI_STATUS_INVALID_PARAMETER;
+    }
+
+    if (counter_id_list == NULL)
+    {
+        SWSS_LOG_ERROR("counter id list pointer is NULL");
+
+        return SAI_STATUS_INVALID_PARAMETER;
+    }
+
+    if (counter_list == NULL)
+    {
+        SWSS_LOG_ERROR("counter list pointer is NULL");
+
+        return SAI_STATUS_INVALID_PARAMETER;
+    }
+
+    if (stats_enum == NULL)
+    {
+        SWSS_LOG_ERROR("enum metadata pointer is NULL, bug?");
+
+        return SAI_STATUS_FAILURE;
+    }
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (sai_metadata_get_enum_value_name(stats_enum, counter_id_list[i]) == NULL)
+        {
+            SWSS_LOG_ERROR("counter id %u is not allowed on %s", counter_id_list[i], stats_enum->name);
+
+            return SAI_STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t meta_sai_get_stats_oid(
+        _In_ sai_object_type_t object_type,
+        _In_ sai_object_id_t object_id,
+        _In_ const sai_enum_metadata_t* stats_enum,
+        _In_ uint32_t count,
+        _In_ const int32_t *counter_id_list,
+        _Out_ uint64_t *counter_list,
+        _In_ sai_get_generic_stats_fn get_stats)
+{
+    SWSS_LOG_ENTER();
+
+    sai_object_id_t switch_id = sai_switch_id_query(object_id);
+
+    sai_status_t status = meta_sai_validate_oid(object_type, &object_id, switch_id, false);
 
     if (status != SAI_STATUS_SUCCESS)
     {
@@ -5779,42 +5864,26 @@ sai_status_t meta_sai_get_stats_oid(
 
     sai_object_meta_key_t meta_key = { .objecttype = object_type, .objectkey = { .key = { .object_id  = object_id } } };
 
-    status = meta_generic_validation_get_stats(meta_key, count, counter_id_list, counter_list);
+    status = meta_generic_validation_get_stats(meta_key, stats_enum, count, counter_id_list, counter_list);
 
     if (status != SAI_STATUS_SUCCESS)
     {
         return status;
     }
 
-    if (get == NULL)
+    if (get_stats == NULL)
     {
         SWSS_LOG_ERROR("get function pointer is NULL");
 
         return SAI_STATUS_INVALID_PARAMETER;
     }
 
-    status = get(object_type, object_id, count, counter_id_list, counter_list);
+    status = get_stats(object_type, object_id, stats_enum, count, counter_id_list, counter_list);
 
     META_LOG_STATUS(status);
 
     return status;
 }
-
-#define DECLARE_META_GET_STATS_OID(type)                               \
-    template                                                           \
-    sai_status_t meta_sai_get_stats_oid<sai_ ## type ## _stat_t>(      \
-        _In_ sai_object_type_t object_type,                            \
-        _In_ sai_object_id_t object_id,                                \
-        _In_ uint32_t count,                                           \
-        _In_ const sai_ ## type ## _stat_t* counter_id_list,           \
-        _Out_ uint64_t *counter_list,                                  \
-        _In_ sai_get_generic_stats_fn<sai_ ## type ## _stat_t> get);
-
-DECLARE_META_GET_STATS_OID(port);
-DECLARE_META_GET_STATS_OID(port_pool);
-DECLARE_META_GET_STATS_OID(queue);
-DECLARE_META_GET_STATS_OID(ingress_priority_group);
-DECLARE_META_GET_STATS_OID(tunnel);
 
 // NOTIFICATIONS
 

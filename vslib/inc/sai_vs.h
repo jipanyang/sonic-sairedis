@@ -17,15 +17,21 @@ extern "C" {
  *
  * Bool flag, (true/false). If set to true, then during create host interface
  * sai object also tap device will be created and mac address will be assigned.
- * For this operation root privilages will be required.
+ * For this operation root privileges will be required.
  *
  * By default this flag is set to false.
  */
 #define SAI_KEY_VS_HOSTIF_USE_TAP_DEVICE      "SAI_VS_HOSTIF_USE_TAP_DEVICE"
 
-// TODO probaby should be per switch
+// TODO probably should be per switch
 #define SAI_VALUE_VS_SWITCH_TYPE_BCM56850     "SAI_VS_SWITCH_TYPE_BCM56850"
 #define SAI_VALUE_VS_SWITCH_TYPE_MLNX2700     "SAI_VS_SWITCH_TYPE_MLNX2700"
+
+#define SAI_VS_COLD_BOOT 0
+#define SAI_VS_WARM_BOOT 1
+#define SAI_VS_FAST_BOOT 2
+
+#define SAI_VS_MAX_PORTS 1024
 
 /**
  * @def SAI_VS_UNITTEST_CHANNEL
@@ -51,7 +57,7 @@ extern "C" {
 /**
  * @def SAI_VS_UNITTEST_ENABLE
  *
- * Notificatio operation for enabling unittests.
+ * Notification operation for enabling unittests.
  */
 #define SAI_VS_UNITTEST_ENABLE_UNITTESTS  "enable_unittests"
 
@@ -70,6 +76,12 @@ typedef enum _sai_vs_switch_type_t
 extern bool                             g_vs_hostif_use_tap_device;
 extern sai_vs_switch_type_t             g_vs_switch_type;
 extern std::recursive_mutex             g_recursive_mutex;
+
+extern int g_vs_boot_type;
+
+extern const char *g_boot_type;
+extern const char *g_warm_boot_read_file;
+extern const char *g_warm_boot_write_file;
 
 extern const sai_acl_api_t              vs_acl_api;
 extern const sai_bfd_api_t              vs_bfd_api;
