@@ -452,14 +452,21 @@ sai_status_t internal_redis_idempotent_set(
                 redis_attr_to_oid_map_insert(DEFAULT_ATTR2OID_PREFIX + fvStr, objectId);
             }
 
-            // Update or insert the attribute value and attributes to OID map
-            for (auto &i : current_fvs)
+            auto it_fv = current_fvs.begin();
+            // Update existing fv
+            while (it_fv != current_fvs.end())
             {
-                if (fvField(fv) == fvField(i))
+                if (fvField(fv) == it_fv->first)
                 {
-                    fvValue(i) = fvValue(fv);
+                    it_fv->second = fvValue(fv);
                     break;
                 }
+                it_fv++;
+            }
+            // insert new fv
+            if (it_fv == current_fvs.end())
+            {
+                current_fvs.push_back(fv);
             }
 
             fvStr = joinOrderedFieldValues(current_fvs);
