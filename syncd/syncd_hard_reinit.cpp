@@ -435,7 +435,12 @@ void processSwitches()
         SWSS_LOG_NOTICE("creating switch VID: %s",
                 sai_serialize_object_id(switch_vid).c_str());
 
-        sai_status_t status = sai_metadata_sai_switch_api->create_switch(&switch_rid, attr_count, attr_list);
+        sai_status_t status;
+
+        {
+            SWSS_LOG_TIMER("Cold boot: create switch");
+            status = sai_metadata_sai_switch_api->create_switch(&switch_rid, attr_count, attr_list);
+        }
 
         gSwitchId = switch_rid;
         SWSS_LOG_NOTICE("Initialize gSwitchId with ID = 0x%lx", gSwitchId);
@@ -1286,7 +1291,12 @@ void performWarmRestart()
         switch_attrs[i+1].value.ptr = (void *)1; // any non-null pointer
     }
     check_notifications_pointers((uint32_t)NELMS(switch_attrs), &switch_attrs[0]);
-    sai_status_t status = sai_metadata_sai_switch_api->create_switch(&switch_rid, (uint32_t)NELMS(switch_attrs), &switch_attrs[0]);
+    sai_status_t status;
+
+    {
+        SWSS_LOG_TIMER("Warm boot: create switch");
+        status = sai_metadata_sai_switch_api->create_switch(&switch_rid, (uint32_t)NELMS(switch_attrs), &switch_attrs[0]);
+    }
 
     if (status != SAI_STATUS_SUCCESS)
     {

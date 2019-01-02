@@ -57,7 +57,9 @@ EIO
 encap
 endl
 enum
+eth
 ethernet
+fastfast
 fdb
 FDB
 fdbs
@@ -67,6 +69,7 @@ FIXME
 FlexCounter
 getInstance
 getSwitchId
+getVid
 github
 GRE
 gSwitchId
@@ -98,6 +101,7 @@ LOOPBACK
 lua
 MCAST
 md
+Mellanox
 metadata
 mlnx
 mpls
@@ -127,6 +131,7 @@ params
 performTransition
 policer
 PORTs
+pre
 ptr
 qos
 queueCounterIds
@@ -141,6 +146,7 @@ refactored
 refactoring
 reimplement
 reinit
+removedVidToRid
 RID
 RIDs
 RIDTOVID
@@ -219,6 +225,7 @@ VIDCOUNTER
 vidReference
 vids
 VIDs
+vidToRid
 VIDTORID
 vlan
 vlans

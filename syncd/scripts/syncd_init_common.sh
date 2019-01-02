@@ -24,12 +24,20 @@ fi
 # Use temporary view between init and apply
 CMD_ARGS+=" -u"
 
-case "$(cat /proc/cmdline)" in
-  *fast-reboot*)
+BOOT_TYPE="$(cat /proc/cmdline | grep -o 'SONIC_BOOT_TYPE=\S*' | cut -d'=' -f2)"
+
+case "$BOOT_TYPE" in
+  fast-reboot)
      FAST_REBOOT='yes'
+    ;;
+  fastfast)
+    if [ -e /var/warmboot/issu_started ]; then
+        FASTFAST_REBOOT='yes'
+    fi
     ;;
   *)
      FAST_REBOOT='no'
+     FASTFAST_REBOOT='no'
     ;;
 esac
 
@@ -55,6 +63,8 @@ function set_start_type()
         CMD_ARGS+=" -t warm"
     elif [ $FAST_REBOOT == "yes" ]; then
         CMD_ARGS+=" -t fast"
+    elif [ $FASTFAST_REBOOT == "yes" ]; then
+        CMD_ARGS+=" -t fastfast"
     fi
 }
 
@@ -87,6 +97,7 @@ config_syncd_mlnx()
     # Write MAC address into /tmp/profile file.
     cat $HWSKU_DIR/sai.profile > /tmp/sai.profile
     echo "DEVICE_MAC_ADDRESS=$ALIGNED_MAC_ADDRESS" >> /tmp/sai.profile
+    echo "SAI_WARM_BOOT_WRITE_FILE=/var/warmboot/" >> /tmp/sai.profile
 }
 
 config_syncd_centec()
@@ -136,6 +147,11 @@ config_syncd_nephos()
     CMD_ARGS+=" -p $HWSKU_DIR/sai.profile"
 }
 
+config_syncd_vs()
+{
+    CMD_ARGS+=" -p $HWSKU_DIR/sai.profile"
+}
+
 config_syncd()
 {
     check_warm_boot
@@ -154,6 +170,8 @@ config_syncd()
          config_syncd_barefoot
     elif [ "$SONIC_ASIC_TYPE" == "nephos" ]; then
         config_syncd_nephos
+    elif [ "$SONIC_ASIC_TYPE" == "vs" ]; then
+        config_syncd_vs
     else
         echo "Unknown ASIC type $SONIC_ASIC_TYPE"
         exit 1

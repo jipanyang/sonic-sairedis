@@ -6,6 +6,7 @@
 #include <limits.h>
 
 #include "swss/warm_restart.h"
+#include "swss/table.h"
 
 extern "C" {
 #include <sai.h>
@@ -68,6 +69,12 @@ std::map<sai_object_id_t, std::shared_ptr<SaiSwitch>> switches;
  * Object ids here a VIDs.
  */
 std::set<sai_object_id_t> initViewRemovedVidSet;
+
+/*
+ * When set to true will enable DB vs ASIC consistency check after comparison
+ * logic.
+ */
+bool g_enableConsistencyCheck = false;
 
 /*
  * By default we are in APPLY mode.
@@ -1357,11 +1364,19 @@ sai_status_t handle_generic(
 }
 
 void translate_vid_to_rid_non_object_id(
-        _In_ sai_object_meta_key_t &meta_key)
+        _Inout_ sai_object_meta_key_t &meta_key)
 {
     SWSS_LOG_ENTER();
 
     auto info = sai_metadata_get_object_type_info(meta_key.objecttype);
+
+    if (info->isobjectid)
+    {
+        meta_key.objectkey.key.object_id =
+            translate_vid_to_rid(meta_key.objectkey.key.object_id);
+
+        return;
+    }
 
     for (size_t j = 0; j < info->structmemberscount; ++j)
     {
@@ -1935,7 +1950,12 @@ void on_switch_create_in_init_view(
 
         sai_object_id_t switch_rid;
 
-        sai_status_t status = sai_metadata_sai_switch_api->create_switch(&switch_rid, attr_count, attr_list);
+        sai_status_t status;
+
+        {
+            SWSS_LOG_TIMER("cold boot: create switch");
+            status = sai_metadata_sai_switch_api->create_switch(&switch_rid, attr_count, attr_list);
+        }
 
         if (status != SAI_STATUS_SUCCESS)
         {
@@ -2919,7 +2939,7 @@ void printUsage()
 {
     SWSS_LOG_ENTER();
 
-    std::cout << "Usage: syncd [-N] [-U] [-d] [-p profile] [-i interval] [-t [cold|warm|fast]] [-h] [-u] [-S]" << std::endl;
+    std::cout << "Usage: syncd [-N] [-U] [-d] [-p profile] [-i interval] [-t [cold|warm|fast|fastfast]] [-h] [-u] [-S]" << std::endl;
     std::cout << "    -N --nocounters" << std::endl;
     std::cout << "        Disable counter thread" << std::endl;
     std::cout << "    -d --diag" << std::endl;
@@ -2929,13 +2949,15 @@ void printUsage()
     std::cout << "    -i --countersInterval interval" << std::endl;
     std::cout << "        Provide counter thread interval" << std::endl;
     std::cout << "    -t --startType type" << std::endl;
-    std::cout << "        Specify cold|warm|fast start type" << std::endl;
+    std::cout << "        Specify cold|warm|fast|fastfast start type" << std::endl;
     std::cout << "    -u --useTempView:" << std::endl;
     std::cout << "        Use temporary view between init and apply" << std::endl;
     std::cout << "    -S --disableExitSleep" << std::endl;
     std::cout << "        Disable sleep when syncd crashes" << std::endl;
     std::cout << "    -U --eableUnittests" << std::endl;
     std::cout << "        Metadata enable unittests" << std::endl;
+    std::cout << "    -C --eableConsistencyCheck" << std::endl;
+    std::cout << "        Enable consisteny check DB vs ASIC after comparison logic" << std::endl;
 #ifdef SAITHRIFT
     std::cout << "    -r --rpcserver"           << std::endl;
     std::cout << "        Enable rpcserver"      << std::endl;
@@ -2955,27 +2977,28 @@ void handleCmdLine(int argc, char **argv)
 
 #ifdef SAITHRIFT
     options.run_rpc_server = false;
-    const char* const optstring = "dNUt:p:i:rm:huS";
+    const char* const optstring = "dNUCt:p:i:rm:huS";
 #else
-    const char* const optstring = "dNUt:p:i:huS";
+    const char* const optstring = "dNUCt:p:i:huS";
 #endif // SAITHRIFT
 
     while(true)
     {
         static struct option long_options[] =
         {
-            { "useTempView",      no_argument,       0, 'u' },
-            { "diag",             no_argument,       0, 'd' },
-            { "startType",        required_argument, 0, 't' },
-            { "profile",          required_argument, 0, 'p' },
-            { "help",             no_argument,       0, 'h' },
-            { "disableExitSleep", no_argument,       0, 'S' },
-            { "enableUnittests",  no_argument,       0, 'U' },
+            { "useTempView",             no_argument,       0, 'u' },
+            { "diag",                    no_argument,       0, 'd' },
+            { "startType",               required_argument, 0, 't' },
+            { "profile",                 required_argument, 0, 'p' },
+            { "help",                    no_argument,       0, 'h' },
+            { "disableExitSleep",        no_argument,       0, 'S' },
+            { "enableUnittests",         no_argument,       0, 'U' },
+            { "enableConsistencyCheck",  no_argument,       0, 'C' },
 #ifdef SAITHRIFT
-            { "rpcserver",        no_argument,       0, 'r' },
-            { "portmap",          required_argument, 0, 'm' },
+            { "rpcserver",               no_argument,       0, 'r' },
+            { "portmap",                 required_argument, 0, 'm' },
 #endif // SAITHRIFT
-            { 0,                  0,                 0,  0  }
+            { 0,                         0,                 0,  0  }
         };
 
         int option_index = 0;
@@ -2992,6 +3015,11 @@ void handleCmdLine(int argc, char **argv)
             case 'U':
                 SWSS_LOG_NOTICE("enable unittests");
                 options.enableUnittests = true;
+                break;
+
+            case 'C':
+                SWSS_LOG_NOTICE("enable consistency check");
+                g_enableConsistencyCheck = true;
                 break;
 
             case 'u':
@@ -3027,6 +3055,10 @@ void handleCmdLine(int argc, char **argv)
                 else if (std::string(optarg) == "fast")
                 {
                     options.startType = SAI_FAST_BOOT;
+                }
+                else if (std::string(optarg) == "fastfast")
+                {
+                    options.startType = SAI_FASTFAST_BOOT;
                 }
                 else
                 {
@@ -3170,6 +3202,8 @@ typedef enum _syncd_restart_type_t
 
     SYNCD_RESTART_TYPE_FAST,
 
+    SYNCD_RESTART_TYPE_PRE_SHUTDOWN,
+
 } syncd_restart_type_t;
 
 syncd_restart_type_t handleRestartQuery(swss::NotificationConsumer &restartQuery)
@@ -3202,8 +3236,43 @@ syncd_restart_type_t handleRestartQuery(swss::NotificationConsumer &restartQuery
         return SYNCD_RESTART_TYPE_FAST;
     }
 
+    if (op == "PRE-SHUTDOWN")
+    {
+        SWSS_LOG_NOTICE("received PRE_SHUTDOWN switch event");
+        return SYNCD_RESTART_TYPE_PRE_SHUTDOWN;
+    }
+
     SWSS_LOG_WARN("received '%s' unknown switch shutdown event, assuming COLD", op.c_str());
     return SYNCD_RESTART_TYPE_COLD;
+}
+
+void handleFfbEvent(swss::NotificationConsumer &ffb)
+{
+    SWSS_LOG_ENTER();
+
+    std::string op;
+    std::string data;
+    std::vector<swss::FieldValueTuple> values;
+
+    ffb.pop(op, data, values);
+
+    if ((op == "SET") && (data == "ISSU_END"))
+    {
+        sai_switch_api_t *sai_switch_api = NULL;
+        sai_api_query(SAI_API_SWITCH, (void**)&sai_switch_api);
+
+        sai_attribute_t attr;
+
+        attr.id = SAI_SWITCH_ATTR_FAST_API_ENABLE;
+        attr.value.booldata = false;
+
+        sai_status_t status = sai_switch_api->set_switch_attribute(gSwitchId, &attr);
+
+        if (status != SAI_STATUS_SUCCESS)
+        {
+            SWSS_LOG_ERROR("Failed to set SAI_SWITCH_ATTR_FAST_API_ENABLE=false: %s", sai_serialize_status(status).c_str());
+        }
+    }
 }
 
 bool isVeryFirstRun()
@@ -3452,6 +3521,8 @@ int syncd_main(int argc, char **argv)
     std::shared_ptr<swss::DBConnector> dbAsic = std::make_shared<swss::DBConnector>(ASIC_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
     std::shared_ptr<swss::DBConnector> dbNtf = std::make_shared<swss::DBConnector>(ASIC_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
     std::shared_ptr<swss::DBConnector> dbFlexCounter = std::make_shared<swss::DBConnector>(FLEX_COUNTER_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
+    std::shared_ptr<swss::DBConnector> dbState = std::make_shared<swss::DBConnector>(STATE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
+    std::unique_ptr<swss::Table> warmRestartTable = std::unique_ptr<swss::Table>(new swss::Table(dbState.get(), STATE_WARM_RESTART_TABLE_NAME));
 
     g_redisClient = std::make_shared<swss::RedisClient>(dbAsic.get());
 
@@ -3459,6 +3530,7 @@ int syncd_main(int argc, char **argv)
     std::shared_ptr<swss::NotificationConsumer> restartQuery = std::make_shared<swss::NotificationConsumer>(dbAsic.get(), "RESTARTQUERY");
     std::shared_ptr<swss::ConsumerTable> flexCounter = std::make_shared<swss::ConsumerTable>(dbFlexCounter.get(), FLEX_COUNTER_TABLE);
     std::shared_ptr<swss::ConsumerTable> flexCounterGroup = std::make_shared<swss::ConsumerTable>(dbFlexCounter.get(), FLEX_COUNTER_GROUP_TABLE);
+    std::shared_ptr<swss::NotificationConsumer> ffb = std::make_shared<swss::NotificationConsumer>(dbAsic.get(), "MLNX_FFB");
 
     /*
      * At the end we cant use producer consumer concept since if one process
@@ -3504,7 +3576,16 @@ int syncd_main(int argc, char **argv)
         options.startType = SAI_COLD_BOOT;
     }
 
-    gProfileMap[SAI_KEY_BOOT_TYPE] = std::to_string(options.startType);
+    if (options.startType == SAI_FASTFAST_BOOT)
+    {
+        /*
+         * Mellanox SAI requires to pass SAI_WARM_BOOT as SAI_BOOT_KEY
+         * to start 'fast-fast'
+         */
+        gProfileMap[SAI_KEY_BOOT_TYPE] = std::to_string(SAI_WARM_BOOT);
+    } else {
+        gProfileMap[SAI_KEY_BOOT_TYPE] = std::to_string(options.startType);
+    }
 
     sai_status_t status = sai_api_initialize(0, (sai_service_method_table_t*)&test_services);
 
@@ -3539,6 +3620,9 @@ int syncd_main(int argc, char **argv)
 
     syncd_restart_type_t shutdownType = SYNCD_RESTART_TYPE_COLD;
 
+    sai_switch_api_t *sai_switch_api = NULL;
+    sai_api_query(SAI_API_SWITCH, (void**)&sai_switch_api);
+
     try
     {
         SWSS_LOG_NOTICE("before onSyncdStart");
@@ -3549,12 +3633,13 @@ int syncd_main(int argc, char **argv)
 
         SWSS_LOG_NOTICE("syncd listening for events");
 
-        swss::Select s;
+        std::shared_ptr<swss::Select> s = std::make_shared<swss::Select>();
 
-        s.addSelectable(asicState.get());
-        s.addSelectable(restartQuery.get());
-        s.addSelectable(flexCounter.get());
-        s.addSelectable(flexCounterGroup.get());
+        s->addSelectable(asicState.get());
+        s->addSelectable(restartQuery.get());
+        s->addSelectable(flexCounter.get());
+        s->addSelectable(flexCounterGroup.get());
+        s->addSelectable(ffb.get());
 
         SWSS_LOG_NOTICE("starting main loop");
 
@@ -3562,7 +3647,7 @@ int syncd_main(int argc, char **argv)
         {
             swss::Selectable *sel = NULL;
 
-            int result = s.select(&sel);
+            int result = s->select(&sel);
 
             if (sel == restartQuery.get())
             {
@@ -3574,8 +3659,78 @@ int syncd_main(int argc, char **argv)
                  * lead to unable to find some objects.
                  */
 
+                SWSS_LOG_NOTICE("is asic queue empty: %d",asicState->empty());
+
+                while (!asicState->empty())
+                {
+                    processEvent(*asicState.get());
+                }
+
+                SWSS_LOG_NOTICE("drained queue");
+
                 shutdownType = handleRestartQuery(*restartQuery);
-                break;
+                if (shutdownType != SYNCD_RESTART_TYPE_PRE_SHUTDOWN)
+                {
+                    // break out the event handling loop to shutdown syncd
+                    break;
+                }
+
+                // Handle switch pre-shutdown and wait for the final shutdown
+                // event
+
+                SWSS_LOG_TIMER("warm pre-shutdown");
+
+                FlexCounter::removeAllCounters();
+
+                sai_attribute_t attr;
+
+                attr.id = SAI_SWITCH_ATTR_RESTART_WARM;
+                attr.value.booldata = true;
+
+                status = sai_switch_api->set_switch_attribute(gSwitchId, &attr);
+
+                if (status != SAI_STATUS_SUCCESS)
+                {
+                    SWSS_LOG_ERROR("Failed to set SAI_SWITCH_ATTR_RESTART_WARM=true: %s for pre-shutdown",
+                            sai_serialize_status(status).c_str());
+
+                    shutdownType = SYNCD_RESTART_TYPE_COLD;
+
+                    warmRestartTable->hset("warm-shutdown", "state", "set-flag-failed");
+                    continue;
+                }
+
+                attr.id = SAI_SWITCH_ATTR_PRE_SHUTDOWN;
+                attr.value.booldata = true;
+
+                status = sai_switch_api->set_switch_attribute(gSwitchId, &attr);
+
+                if (status == SAI_STATUS_SUCCESS)
+                {
+                    warmRestartTable->hset("warm-shutdown", "state", "pre-shutdown-succeeded");
+
+                    s = std::make_shared<swss::Select>(); // make sure previous select is destroyed
+
+                    s->addSelectable(restartQuery.get());
+
+                    SWSS_LOG_NOTICE("switched to PRE_SHUTDOWN, from now on accepting only shurdown requests");
+                }
+                else
+                {
+                    SWSS_LOG_ERROR("Failed to set SAI_SWITCH_ATTR_PRE_SHUTDOWN=true: %s",
+                            sai_serialize_status(status).c_str());
+
+                    warmRestartTable->hset("warm-shutdown", "state", "pre-shutdown-failed");
+
+                    // Restore cold shutdown.
+                    attr.id = SAI_SWITCH_ATTR_RESTART_WARM;
+                    attr.value.booldata = false;
+                    status = sai_switch_api->set_switch_attribute(gSwitchId, &attr);
+                }
+            }
+            else if (sel == ffb.get())
+            {
+                handleFfbEvent(*ffb);
             }
             else if (sel == flexCounter.get())
             {
@@ -3598,9 +3753,6 @@ int syncd_main(int argc, char **argv)
         exit_and_notify(EXIT_FAILURE);
     }
 
-    sai_switch_api_t *sai_switch_api = NULL;
-    sai_api_query(SAI_API_SWITCH, (void**)&sai_switch_api);
-
     if (shutdownType == SYNCD_RESTART_TYPE_WARM)
     {
         const char *warmBootWriteFile = profile_get_value(0, SAI_KEY_WARM_BOOT_WRITE_FILE);
@@ -3612,6 +3764,7 @@ int syncd_main(int argc, char **argv)
             SWSS_LOG_WARN("user requested warm shutdown but warmBootWriteFile is not specified, forcing cold shutdown");
 
             shutdownType = SYNCD_RESTART_TYPE_COLD;
+            warmRestartTable->hset("warm-shutdown", "state", "warm-shutdown-failed");
         }
         else
         {
@@ -3629,6 +3782,7 @@ int syncd_main(int argc, char **argv)
                 SWSS_LOG_ERROR("Failed to set SAI_SWITCH_ATTR_RESTART_WARM=true: %s, fall back to cold restart",
                         sai_serialize_status(status).c_str());
                 shutdownType = SYNCD_RESTART_TYPE_COLD;
+                warmRestartTable->hset("warm-shutdown", "state", "set-flag-failed");
             }
         }
     }
@@ -3659,14 +3813,26 @@ int syncd_main(int argc, char **argv)
 
     FlexCounter::removeAllCounters();
 
-    // Stop notification thread before removing switch
+    {
+        SWSS_LOG_TIMER("remove switch");
+        status = sai_switch_api->remove_switch(gSwitchId);
+    }
+
+    // Stop notification thread after removing switch
     stopNotificationsProcessingThread();
 
-    status = sai_switch_api->remove_switch(gSwitchId);
     if (status != SAI_STATUS_SUCCESS)
     {
         SWSS_LOG_NOTICE("Can't delete a switch. gSwitchId=0x%lx status=%s", gSwitchId,
                 sai_serialize_status(status).c_str());
+    }
+
+    if (shutdownType == SYNCD_RESTART_TYPE_WARM)
+    {
+        warmRestartTable->hset("warm-shutdown", "state",
+                              (status == SAI_STATUS_SUCCESS) ?
+                              "warm-shutdown-succeeded":
+                              "warm-shutdown-failed");
     }
 
     SWSS_LOG_NOTICE("calling api uninitialize");

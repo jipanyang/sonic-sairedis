@@ -21,6 +21,10 @@
 #include <net/if_arp.h>
 #include <linux/if_ether.h>
 
+#include "swss/json.hpp"
+
+using json = nlohmann::json;
+
 // TODO on hostif remove we should stop threads
 
 typedef struct _hostif_info_t
@@ -44,6 +48,43 @@ typedef struct _hostif_info_t
 std::map<std::string, std::shared_ptr<hostif_info_t>> hostif_info_map;
 
 std::set<fdb_info_t> g_fdb_info_set;
+
+std::string sai_vs_serialize_fdb_info(
+        _In_ const fdb_info_t& fi)
+{
+    SWSS_LOG_ENTER();
+
+    json j;
+
+    j["port_id"] = sai_serialize_object_id(fi.port_id);
+    j["vlan_id"] = sai_serialize_vlan_id(fi.vlan_id);
+    j["bridge_port_id"] = sai_serialize_object_id(fi.bridge_port_id);
+    j["fdb_entry"] = sai_serialize_fdb_entry(fi.fdb_entry);
+    j["timestamp"] = sai_serialize_number(fi.timestamp);
+
+    SWSS_LOG_INFO("item: %s", j.dump().c_str());
+
+    return j.dump();
+}
+
+void sai_vs_deserialize_fdb_info(
+        _In_ const std::string& data,
+        _Out_ fdb_info_t& fi)
+{
+    SWSS_LOG_ENTER();
+
+    SWSS_LOG_INFO("item: %s", data.c_str());
+
+    const json& j = json::parse(data);
+
+    memset(&fi, 0, sizeof(fi));
+
+    sai_deserialize_object_id(j["port_id"], fi.port_id);
+    sai_deserialize_vlan_id(j["vlan_id"], fi.vlan_id);
+    sai_deserialize_object_id(j["bridge_port_id"], fi.bridge_port_id);
+    sai_deserialize_fdb_entry(j["fdb_entry"], fi.fdb_entry);
+    sai_deserialize_number(j["timestamp"], fi.timestamp);
+}
 
 void updateLocalDB(
         _In_ const sai_fdb_event_notification_data_t &data,
@@ -681,7 +722,65 @@ int ifup(const char *dev)
         return err;
     }
 
+    if (ifr.ifr_flags & IFF_UP)
+    {
+        close(s);
+
+        return 0;
+    }
+
     ifr.ifr_flags |= IFF_UP;
+
+    err = ioctl(s, SIOCSIFFLAGS, &ifr);
+
+    if (err < 0)
+    {
+        SWSS_LOG_ERROR("ioctl SIOCSIFFLAGS on socket %d %s failed, err %d", s, dev, err);
+    }
+
+    close(s);
+
+    return err;
+}
+
+int promisc(const char *dev)
+{
+    SWSS_LOG_ENTER();
+
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (s < 0)
+    {
+        SWSS_LOG_ERROR("failed to open socket: %d", s);
+
+        return -1;
+    }
+
+    struct ifreq ifr;
+
+    memset(&ifr, 0, sizeof ifr);
+
+    strncpy(ifr.ifr_name, dev , IFNAMSIZ);
+
+    int err = ioctl(s, SIOCGIFFLAGS, &ifr);
+
+    if (err < 0)
+    {
+        SWSS_LOG_ERROR("ioctl SIOCGIFFLAGS on socket %d %s failed, err %d", s, dev, err);
+
+        close(s);
+
+        return err;
+    }
+
+    if (ifr.ifr_flags & IFF_PROMISC)
+    {
+        close(s);
+
+        return 0;
+    }
+
+    ifr.ifr_flags |= IFF_PROMISC;
 
     err = ioctl(s, SIOCSIFFLAGS, &ifr);
 
@@ -769,6 +868,50 @@ void tap2veth_fun(std::shared_ptr<hostif_info_t> info)
     SWSS_LOG_NOTICE("ending thread proc for %s", info->name.c_str());
 }
 
+std::string vs_get_veth_name(
+        _In_ const std::string& tapname,
+        _In_ sai_object_id_t port_id)
+{
+    SWSS_LOG_ENTER();
+
+    std::string vethname = SAI_VS_VETH_PREFIX + tapname;
+
+    // check if user override interface names
+
+    sai_attribute_t attr;
+
+    uint32_t lanes[4];
+
+    attr.id = SAI_PORT_ATTR_HW_LANE_LIST;
+
+    attr.value.u32list.count = 4;
+    attr.value.u32list.list = lanes;
+
+    if (vs_generic_get(SAI_OBJECT_TYPE_PORT, port_id, 1, &attr) != SAI_STATUS_SUCCESS)
+    {
+        SWSS_LOG_WARN("failed to get port %s lanes, using veth: %s",
+                sai_serialize_object_id(port_id).c_str(),
+                vethname.c_str());
+    }
+    else
+    {
+        auto it = g_lane_to_ifname.find(lanes[0]);
+
+        if (it == g_lane_to_ifname.end())
+        {
+            SWSS_LOG_WARN("failed to get ifname from lane number %u", lanes[0]);
+        }
+        else
+        {
+            SWSS_LOG_NOTICE("using %s instead of %s", it->second.c_str(), vethname.c_str());
+
+            vethname = it->second;
+        }
+    }
+
+    return vethname;
+}
+
 bool hostif_create_tap_veth_forwarding(
         _In_ const std::string &tapname,
         _In_ int tapfd,
@@ -778,9 +921,9 @@ bool hostif_create_tap_veth_forwarding(
 
     // we assume here that veth devices were added by user before creating this
     // host interface, vEthernetX will be used for packet transfer between ip
-    // namespaces
+    // namespaces or ethernet device name used in lane map if provided
 
-    std::string vethname = SAI_VS_VETH_PREFIX + tapname;
+    std::string vethname = vs_get_veth_name(tapname, port_id);
 
     int packet_socket = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
 
@@ -812,6 +955,24 @@ bool hostif_create_tap_veth_forwarding(
 
     SWSS_LOG_INFO("interface index = %d %s\n", sock_address.sll_ifindex, vethname.c_str());
 
+    if (ifup(vethname.c_str()))
+    {
+        SWSS_LOG_ERROR("ifup failed on %s", vethname.c_str());
+
+        close(packet_socket);
+
+        return false;
+    }
+
+    if (promisc(vethname.c_str()))
+    {
+        SWSS_LOG_ERROR("promisc failed on %s", vethname.c_str());
+
+        close(packet_socket);
+
+        return false;
+    }
+
     if (bind(packet_socket, (struct sockaddr*) &sock_address, sizeof(sock_address)) < 0)
     {
         SWSS_LOG_ERROR("bind failed on %s", vethname.c_str());
@@ -841,23 +1002,12 @@ bool hostif_create_tap_veth_forwarding(
     return true;
 }
 
-sai_status_t vs_create_hostif_int(
-        _In_ sai_object_type_t object_type,
-        _Out_ sai_object_id_t *hostif_id,
+sai_status_t vs_create_hostif_tap_interface(
         _In_ sai_object_id_t switch_id,
         _In_ uint32_t attr_count,
         _In_ const sai_attribute_t *attr_list)
 {
     SWSS_LOG_ENTER();
-
-    if (g_vs_hostif_use_tap_device == false)
-    {
-        return vs_generic_create(object_type,
-                hostif_id,
-                switch_id,
-                attr_count,
-                attr_list);
-    }
 
     // validate SAI_HOSTIF_ATTR_TYPE
 
@@ -941,6 +1091,8 @@ sai_status_t vs_create_hostif_int(
 
     sai_attribute_t attr;
 
+    memset(&attr, 0, sizeof(attr));
+
     attr.id = SAI_SWITCH_ATTR_SRC_MAC_ADDRESS;
 
     sai_status_t status = vs_generic_get(SAI_OBJECT_TYPE_SWITCH, switch_id, 1, &attr);
@@ -970,7 +1122,7 @@ sai_status_t vs_create_hostif_int(
         SWSS_LOG_ERROR("forwarding rule on %s was not added", name.c_str());
     }
 
-    std::string vname = SAI_VS_VETH_PREFIX + name;
+    std::string vname = vs_get_veth_name(name, obj_id);
 
     SWSS_LOG_INFO("mapping interface %s to port id %s",
             vname.c_str(),
@@ -985,7 +1137,69 @@ sai_status_t vs_create_hostif_int(
 
     SWSS_LOG_INFO("created tap interface %s", name.c_str());
 
-    return vs_generic_create(object_type,
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t vs_recreate_hostif_tap_interfaces(
+        _In_ sai_object_id_t switch_id)
+{
+    SWSS_LOG_ENTER();
+
+    if (g_vs_hostif_use_tap_device == false)
+    {
+        return SAI_STATUS_SUCCESS;
+    }
+
+    if (g_switch_state_map.find(switch_id) == g_switch_state_map.end())
+    {
+        SWSS_LOG_ERROR("failed to find switch %s in switch state map", sai_serialize_object_id(switch_id).c_str());
+
+        return SAI_STATUS_FAILURE;
+    }
+
+    auto &objectHash = g_switch_state_map.at(switch_id)->objectHash.at(SAI_OBJECT_TYPE_HOSTIF);
+
+    SWSS_LOG_NOTICE("attempt to recreate %zu tap devices for host interfaces", objectHash.size());
+
+    for (auto okvp: objectHash)
+    {
+        std::vector<sai_attribute_t> attrs;
+
+        for (auto akvp: okvp.second)
+        {
+            attrs.push_back(*akvp.second->getAttr());
+        }
+
+        vs_create_hostif_tap_interface(switch_id, (uint32_t)attrs.size(), attrs.data());
+    }
+
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t vs_create_hostif_int(
+        _In_ sai_object_type_t object_type,
+        _Out_ sai_object_id_t *hostif_id,
+        _In_ sai_object_id_t switch_id,
+        _In_ uint32_t attr_count,
+        _In_ const sai_attribute_t *attr_list)
+{
+    SWSS_LOG_ENTER();
+
+    if (g_vs_hostif_use_tap_device == true)
+    {
+        sai_status_t status = vs_create_hostif_tap_interface(
+                switch_id,
+                attr_count,
+                attr_list);
+
+        if (status != SAI_STATUS_SUCCESS)
+        {
+            return status;
+        }
+    }
+
+    return vs_generic_create(
+            object_type,
             hostif_id,
             switch_id,
             attr_count,
