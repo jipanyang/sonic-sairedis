@@ -405,13 +405,6 @@ sai_status_t internal_redis_idempotent_set(
         // If it is default object created by libsai, don't check reverse mapping.
         auto default_obj_fvs = redis_oid_to_attr_map_lookup(defaultObjKey);
 
-#if 0
-        auto info = sai_metadata_get_object_type_info(object_type);
-        if (!info->isnonobjectid && default_obj_fvs.size() == 0)
-        {
-
-        }
-#endif
         // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
         if (object_type != SAI_OBJECT_TYPE_FDB_ENTRY &&
             object_type != SAI_OBJECT_TYPE_NEIGHBOR_ENTRY &&
