@@ -12,6 +12,7 @@ AC_PROG_LIBTOOL
 AC_HEADER_STDC
 
 AM_CONDITIONAL(sonic_asic_platform_barefoot,   test x$CONFIGURED_PLATFORM = xbarefoot)
+AM_CONDITIONAL(sonic_asic_platform_mellanox,   test x$CONFIGURED_PLATFORM = xmellanox)
 
 AC_ARG_ENABLE(debug,
 [  --enable-debug          turn on debugging],
