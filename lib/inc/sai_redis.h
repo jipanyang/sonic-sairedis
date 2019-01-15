@@ -23,6 +23,7 @@ extern "C" {
 #include "swss/select.h"
 #include "swss/logger.h"
 #include "meta/sai_meta.h"
+#include "swss/warm_restart.h"
 
 /*
  * Switch index is encoded on 1 byte so we can have

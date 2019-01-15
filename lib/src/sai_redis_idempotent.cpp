@@ -483,6 +483,8 @@ sai_status_t internal_redis_idempotent_set(
 
         assert(attr_entry.size() == 1);
         vkco.emplace_back(defaultObjKey, "HSET", attr_entry);
+        // Note: the in memory default object keeps the last fv entry only,
+        // but defaultObjKey(RESTORE_DEFAULT_OBJ_??) has complete fv entries.
         redis_oid_to_attr_map_insert(defaultObjKey, attr_entry);
     }
     // Update the attribute in obj_key to attributes map
