@@ -332,6 +332,17 @@ sai_status_t internal_redis_idempotent_create(
         return SAI_STATUS_SUCCESS;
     }
 
+    if (object_type == SAI_OBJECT_TYPE_FDB_ENTRY)
+    {
+        //TODO: double check, do we need to check fdb type?
+        auto ptr_value_str = g_redisClient->hget("ASIC_STATE:" + obj_key, "SAI_FDB_ENTRY_ATTR_TYPE");
+        if (ptr_value_str && *ptr_value_str == "SAI_FDB_ENTRY_TYPE_DYNAMIC")
+        {
+            SWSS_LOG_INFO("RESTORE: skipping redundant FDB create: %s, fields: %s", obj_key.c_str(), fvStr.c_str());
+            return SAI_STATUS_SUCCESS;
+        }
+    }
+
     redis_oid_to_attr_map_insert(restoreKey, attr_entry);
     std::vector<swss::KeyOpFieldsValuesTuple> vkco;
     vkco.emplace_back(restoreKey, "HMSET", attr_entry);
