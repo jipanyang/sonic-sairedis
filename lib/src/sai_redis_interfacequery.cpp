@@ -144,6 +144,7 @@ sai_status_t sai_api_initialize(
 
     g_apiInitialized = true;
 
+    // Restore the object mapping from DB to local mem cache
     if (g_idempotent)
     {
         redis_oid_to_owner_map_restore();

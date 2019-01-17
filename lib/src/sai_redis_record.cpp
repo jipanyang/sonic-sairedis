@@ -50,7 +50,7 @@ void logfileReopen()
     }
 }
 
-void recordLine(std::string s)
+void recordLine(const std::string &s)
 {
     std::lock_guard<std::mutex> lock(g_recordMutex);
 

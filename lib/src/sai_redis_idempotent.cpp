@@ -14,6 +14,22 @@ static std::unordered_map<std::string, std::vector<swss::FieldValueTuple>> oid2a
  */
 static std::unordered_map<std::string, std::string> oid2owner;
 
+
+static void redisLog(const std::string &logstr)
+{
+    if (g_record)
+    {
+        recordLine(logstr);
+    }
+
+    // Log the operations between initView and applyView
+    // In normal warm restart scenario, there should be no operation passed to syncd during this phase.
+    if (g_asicInitViewMode && swss::WarmStart::isWarmStart())
+    {
+        SWSS_LOG_WARN("RESTORE: %s", logstr.c_str());
+    }
+}
+
 static sai_object_id_t redis_attr_to_oid_db_lookup(
      _In_ const std::string &attrFvStr)
 {
@@ -271,10 +287,7 @@ sai_status_t redis_idempotent_create(
     key = str_object_type + ":" + serialized_object_id;
     SWSS_LOG_DEBUG("generic create key: %s, fields: %lu", key.c_str(), entry.size());
 
-    if (g_record)
-    {
-        recordLine("c|" + key + "|" + fvStr);
-    }
+    redisLog("c|" + key + "|" + fvStr);
 
     std::vector<swss::KeyOpFieldsValuesTuple> vkco;
     std::vector<swss::FieldValueTuple> fvs;
@@ -312,7 +325,7 @@ sai_status_t redis_idempotent_create(
 }
 
 // It is for non-sai_object_id_t object create only.
-// May not be necessary in future, since orchagent did the filtering partially for router, neighbor, nexthop,
+// May not be necessary in future for router, neighbor and nexthop, since orchagent did the filtering already.
 sai_status_t internal_redis_idempotent_create(
         _In_ sai_object_type_t object_type,
         _In_ const std::string &obj_key,   // in format of str_object_type + ":" + serialized_object_id
@@ -347,10 +360,7 @@ sai_status_t internal_redis_idempotent_create(
     std::vector<swss::KeyOpFieldsValuesTuple> vkco;
     vkco.emplace_back(restoreKey, "HMSET", attr_entry);
 
-    if (g_record)
-    {
-        recordLine("c|" + obj_key + "|" + fvStr);
-    }
+    redisLog("c|" + obj_key + "|" + fvStr);
 
     g_asicState->set(obj_key, attr_entry, "create", EMPTY_PREFIX, vkco);
 
@@ -480,7 +490,7 @@ sai_status_t internal_redis_idempotent_set(
             fvs.emplace_back(obj_key, "NULL");
             vkco.emplace_back(attrFvStr, "HSET", fvs);
             redis_attr_to_oid_map_insert(attrFvStr, objectId);
-            SWSS_LOG_DEBUG("RESTORE_DB: generic set key: %s, %s:%s",
+            SWSS_LOG_DEBUG("RESTORE: generic set key: %s, %s:%s",
                     obj_key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
 
             UNSET_OBJ_OWNER();
@@ -502,10 +512,8 @@ sai_status_t internal_redis_idempotent_set(
     redis_oid_to_attr_map_insert(restoreKey, current_fvs);
     vkco.emplace_back(restoreKey, "HMSET", attr_entry);
 
-    if (g_record)
-    {
-        recordLine("s|" + obj_key + "|" + joinFieldValues(attr_entry));
-    }
+    redisLog("s|" + obj_key + "|" + joinFieldValues(attr_entry));
+
     g_asicState->set(obj_key, attr_entry, "set", EMPTY_PREFIX, vkco);
     return SAI_STATUS_SUCCESS;
 }
@@ -526,7 +534,7 @@ sai_status_t internal_redis_idempotent_remove(
     fvs = redis_oid_to_attr_map_lookup(restoreKey);
     if (fvs.size() > 0)
     {
-        SWSS_LOG_INFO("RESTORE_DB: generic remove key: %s", obj_key.c_str());
+        SWSS_LOG_INFO("RESTORE: generic remove key: %s", obj_key.c_str());
         // TODO: Use more generic method like sai_metadata_is_object_type_oid(object_type)
         // For object with key type of sai_object_id_t, there is reverse mapping from
         // attributes to OID.
@@ -557,7 +565,7 @@ sai_status_t internal_redis_idempotent_remove(
                 if (object_id == SAI_NULL_OBJECT_ID)
                 {
                     UNSET_OBJ_OWNER();
-                    SWSS_LOG_ERROR("RESTORE_DB: generic remove key: %s failed to find ATTR2OID mapping for",
+                    SWSS_LOG_ERROR("RESTORE: generic remove key: %s failed to find ATTR2OID mapping for",
                             obj_key.c_str(), attrFvStr.c_str());
                     return SAI_STATUS_ITEM_NOT_FOUND;
                 }
@@ -575,7 +583,7 @@ sai_status_t internal_redis_idempotent_remove(
                     if (object_id == SAI_NULL_OBJECT_ID)
                     {
                         UNSET_OBJ_OWNER();
-                        SWSS_LOG_ERROR("RESTORE_DB: generic remove key: %s failed to find DEFAULT_ATTR2OID mapping for",
+                        SWSS_LOG_ERROR("RESTORE: generic remove key: %s failed to find DEFAULT_ATTR2OID mapping for",
                                 obj_key.c_str(), attrFvStr.c_str());
                         return SAI_STATUS_ITEM_NOT_FOUND;
                     }
@@ -596,7 +604,7 @@ sai_status_t internal_redis_idempotent_remove(
         // Here ASIC db is being checked for the existence of the object.
         // For those default objects from ASIC, no entry for them in
         // restore DB if there is no set history on it.
-        // Each orchagent actually already skipped the default object removal,
+        // Orchagent actually already skipped the default object removal,
         // Double check here anyway.
         auto default_exist = g_redisClient->exists("ASIC_STATE:" + obj_key);
         if (default_exist == 0)
@@ -605,15 +613,12 @@ sai_status_t internal_redis_idempotent_remove(
             // The second remove may arrives here just after first remove is processed by syncd.
             // Ignoring such case with assumption that feedback path implementation is comming, also no such
             // operation for default objects yet.
-            SWSS_LOG_INFO("RESTORE_DB: generic remove key: %s, already done in ASIC DB", obj_key.c_str());
+            SWSS_LOG_WARN("RESTORE: generic remove key: %s, already done in ASIC DB", obj_key.c_str());
             return SAI_STATUS_SUCCESS;
         }
     }
 
-    if (g_record)
-    {
-        recordLine("r|" + obj_key);
-    }
+    redisLog("r|" + obj_key);
     g_asicState->del(obj_key, "remove", EMPTY_PREFIX, vkco);
 
     return SAI_STATUS_SUCCESS;

@@ -127,8 +127,6 @@ sai_status_t sai_redis_notify_syncd(
             SWSS_LOG_NOTICE("Skipping view comparison for warm restart");
             return SAI_STATUS_SUCCESS;
         }
-        // TODO: Add more validation for operations between init view and apply view.
-        // In normal scenario, the number of operations should be 0.
     }
 
     sai_status_t status = sai_redis_internal_notify_syncd(op);
