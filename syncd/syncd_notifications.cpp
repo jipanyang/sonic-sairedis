@@ -458,6 +458,7 @@ std::condition_variable cv;
 class ntf_queue_t
 {
 public:
+    ntf_queue_t() { }
     bool enqueue(swss::KeyOpFieldsValuesTuple msg);
     bool tryDequeue(swss::KeyOpFieldsValuesTuple& msg);
     size_t queueStats()
@@ -480,7 +481,15 @@ private:
     const size_t limit = 300000;
 };
 
-static std::unique_ptr<ntf_queue_t> ntf_queue_hdlr;
+
+/*
+ * Make sure that notification queue pointer is populated before we start
+ * thread, and before we create_switch, since at switch_create we can start
+ * receiving fdb_notifications which will arrive on different thread and
+ * will call queueStats() when queue pointer could be null (this=0x0).
+ */
+
+static std::unique_ptr<ntf_queue_t> ntf_queue_hdlr = std::unique_ptr<ntf_queue_t>(new ntf_queue_t);
 
 bool ntf_queue_t::tryDequeue(
         _Out_ swss::KeyOpFieldsValuesTuple &item)
@@ -640,8 +649,6 @@ std::unique_lock<std::mutex> ulock(ntf_mutex);
 void ntf_process_function()
 {
     SWSS_LOG_ENTER();
-
-    ntf_queue_hdlr = std::unique_ptr<ntf_queue_t>(new ntf_queue_t);
 
     while (runThread)
     {

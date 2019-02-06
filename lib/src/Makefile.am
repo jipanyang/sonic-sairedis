@@ -1,4 +1,4 @@
-AM_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/lib/inc -I$(top_srcdir)/SAI/inc -I$(top_srcdir)/SAI/meta
+AM_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/lib/inc -I$(top_srcdir)/SAI/inc -I$(top_srcdir)/SAI/meta -I$(top_srcdir)/SAI/experimental
 
 if DEBUG
 DBGFLAGS = -ggdb -D_DEBUG_
@@ -11,6 +11,7 @@ lib_LTLIBRARIES = libsairedis.la
 libsairedis_la_SOURCES = \
 						 sai_redis_acl.cpp \
 						 sai_redis_bfd.cpp \
+						 sai_redis_bmtor.cpp \
 						 sai_redis_bridge.cpp \
 						 sai_redis_buffer.cpp \
 						 sai_redis_dtel.cpp \
