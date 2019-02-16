@@ -369,6 +369,28 @@ sai_status_t internal_redis_idempotent_create(
     return SAI_STATUS_SUCCESS;
 }
 
+static void internal_update_fvs(
+    _Inout_ std::vector<swss::FieldValueTuple> &current_fvs,
+    _In_ const swss::FieldValueTuple &fv)
+{
+    auto it_fv = current_fvs.begin();
+    // Update existing fv
+    while (it_fv != current_fvs.end())
+    {
+        if (fvField(fv) == it_fv->first)
+        {
+            it_fv->second = fvValue(fv);
+            break;
+        }
+        it_fv++;
+    }
+    // insert new fv
+    if (it_fv == current_fvs.end())
+    {
+        current_fvs.push_back(fv);
+    }
+}
+
 // Perform set processing, only push data down when delta exists.
 // obj_key: in format of str_object_type + ":" + serialized_object_id
 sai_status_t internal_redis_idempotent_set(
@@ -466,22 +488,7 @@ sai_status_t internal_redis_idempotent_set(
                 redis_attr_to_oid_map_insert(DEFAULT_ATTR2OID_PREFIX + fvStr, objectId);
             }
 
-            auto it_fv = current_fvs.begin();
-            // Update existing fv
-            while (it_fv != current_fvs.end())
-            {
-                if (fvField(fv) == it_fv->first)
-                {
-                    it_fv->second = fvValue(fv);
-                    break;
-                }
-                it_fv++;
-            }
-            // insert new fv
-            if (it_fv == current_fvs.end())
-            {
-                current_fvs.push_back(fv);
-            }
+            internal_update_fvs(current_fvs, fv);
 
             fvStr = joinOrderedFieldValues(current_fvs);
             attrFvStr = ATTR2OID_PREFIX + fvStr;
@@ -494,6 +501,12 @@ sai_status_t internal_redis_idempotent_set(
                     obj_key.c_str(), fvField(fv).c_str(), fvValue(fv).c_str());
 
             UNSET_OBJ_OWNER();
+        }
+        else
+        {
+            // No need to perform reverse mapping (attr to OID) for fdb, route, neigh and default libsai objects.
+            // But don't forget to update the fv attributes.
+            internal_update_fvs(current_fvs, fv);
         }
     }
     else
