@@ -1,4 +1,5 @@
 #include "sai_redis.h"
+#include "sai_redis_idempotent_internal.h"
 #include "meta/sai_serialize.h"
 #include "meta/saiattributelist.h"
 
@@ -88,12 +89,12 @@ sai_object_type_t sai_object_type_query(
 
     sai_object_type_t ot = (sai_object_type_t)((object_id >> 48) & 0xFF);
 
-    if (ot == SAI_OBJECT_TYPE_NULL || ot >= SAI_OBJECT_TYPE_MAX)
+    if (ot == SAI_OBJECT_TYPE_NULL || ot >= SAI_OBJECT_TYPE_EXTENSIONS_MAX)
     {
         SWSS_LOG_ERROR("invalid object id 0x%lx", object_id);
 
         /*
-         * We can't throw here, since it would give no meaningfull message.
+         * We can't throw here, since it would give no meaningful message.
          * Throwing at one level up is better.
          */
 
@@ -156,7 +157,7 @@ sai_object_id_t redis_create_virtual_object_id(
     SWSS_LOG_ENTER();
 
     if ((object_type <= SAI_OBJECT_TYPE_NULL) ||
-            (object_type >= SAI_OBJECT_TYPE_MAX))
+            (object_type >= SAI_OBJECT_TYPE_EXTENSIONS_MAX))
     {
         SWSS_LOG_THROW("invalid objct type: %d", object_type);
     }
@@ -226,6 +227,12 @@ sai_status_t internal_redis_generic_create(
 
     SWSS_LOG_DEBUG("generic create key: %s, fields: %lu", key.c_str(), entry.size());
 
+    // For idempotent SAI redis operation, only non-sai_object_id_t objects will hit here.
+    if (g_idempotent)
+    {
+        return internal_redis_idempotent_create(object_type, key, entry);
+    }
+
     if (g_record)
     {
         recordLine("c|" + key + "|" + joinFieldValues(entry));
@@ -247,6 +254,10 @@ sai_status_t redis_generic_create(
 {
     SWSS_LOG_ENTER();
 
+    if (g_idempotent)
+    {
+        return redis_idempotent_create(object_type, object_id, switch_id, attr_count, attr_list);
+    }
     // on create vid is put in db by syncd
     *object_id = redis_create_virtual_object_id(object_type, switch_id);
 
@@ -356,7 +367,7 @@ sai_status_t internal_redis_bulk_generic_create(
     }
 
     /*
-     * We are adding number of entries to actualy add ':' to be compatible
+     * We are adding number of entries to actually add ':' to be compatible
      * with previous
      */
 
@@ -372,7 +383,7 @@ sai_status_t internal_redis_bulk_generic_create(
         }
 
         /*
-         * Capital 'C' stads for bulk CREATE operation.
+         * Capital 'C' stands for bulk CREATE operation.
          */
 
         recordLine("C|" + str_object_type + joined);
@@ -391,50 +402,25 @@ sai_status_t internal_redis_bulk_generic_create(
     return SAI_STATUS_SUCCESS;
 }
 
-sai_status_t redis_generic_create_fdb_entry(
-        _In_ const sai_fdb_entry_t *fdb_entry,
-        _In_ uint32_t attr_count,
-        _In_ const sai_attribute_t *attr_list)
-{
-    SWSS_LOG_ENTER();
+#define REDIS_ENTRY_CREATE(OT,ot)                       \
+    sai_status_t redis_generic_create_ ## ot(           \
+            _In_ const sai_ ## ot ## _t * entry,        \
+            _In_ uint32_t attr_count,                   \
+            _In_ const sai_attribute_t *attr_list)      \
+    {                                                   \
+        SWSS_LOG_ENTER();                               \
+        std::string str = sai_serialize_ ## ot(*entry); \
+        return internal_redis_generic_create(           \
+                SAI_OBJECT_TYPE_ ## OT,                 \
+                str,                                    \
+                attr_count,                             \
+                attr_list);                             \
+    }
 
-    std::string str_fdb_entry = sai_serialize_fdb_entry(*fdb_entry);
-
-    return internal_redis_generic_create(
-            SAI_OBJECT_TYPE_FDB_ENTRY,
-            str_fdb_entry,
-            attr_count,
-            attr_list);
-}
-
-sai_status_t redis_generic_create_neighbor_entry(
-        _In_ const sai_neighbor_entry_t* neighbor_entry,
-        _In_ uint32_t attr_count,
-        _In_ const sai_attribute_t *attr_list)
-{
-    SWSS_LOG_ENTER();
-
-    std::string str_neighbor_entry = sai_serialize_neighbor_entry(*neighbor_entry);
-
-    return internal_redis_generic_create(
-            SAI_OBJECT_TYPE_NEIGHBOR_ENTRY,
-            str_neighbor_entry,
-            attr_count,
-            attr_list);
-}
-
-sai_status_t redis_generic_create_route_entry(
-        _In_ const sai_route_entry_t* route_entry,
-        _In_ uint32_t attr_count,
-        _In_ const sai_attribute_t *attr_list)
-{
-    SWSS_LOG_ENTER();
-
-    std::string str_route_entry = sai_serialize_route_entry(*route_entry);
-
-    return internal_redis_generic_create(
-            SAI_OBJECT_TYPE_ROUTE_ENTRY,
-            str_route_entry,
-            attr_count,
-            attr_list);
-}
+REDIS_ENTRY_CREATE(FDB_ENTRY,fdb_entry);
+REDIS_ENTRY_CREATE(INSEG_ENTRY,inseg_entry);
+REDIS_ENTRY_CREATE(IPMC_ENTRY,ipmc_entry);
+REDIS_ENTRY_CREATE(L2MC_ENTRY,l2mc_entry);
+REDIS_ENTRY_CREATE(MCAST_FDB_ENTRY,mcast_fdb_entry);
+REDIS_ENTRY_CREATE(NEIGHBOR_ENTRY,neighbor_entry);
+REDIS_ENTRY_CREATE(ROUTE_ENTRY,route_entry);

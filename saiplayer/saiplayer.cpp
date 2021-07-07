@@ -18,9 +18,9 @@ extern "C" {
 #include <string>
 
 /*
- * Since this is player, we record actions from orch agent.  No special case
+ * Since this is player, we record actions from orchagent.  No special case
  * should be needed for switch in case it contains some oid values (like in
- * syncd cold restart) since orch agent should never create switch with oid
+ * syncd cold restart) since orchagent should never create switch with oid
  * values set at creation time.
  */
 
@@ -313,6 +313,10 @@ void match_list_lengths(
 
             case SAI_ATTR_VALUE_TYPE_QOS_MAP_LIST:
                 CHECK_LIST(value.qosmap);
+                break;
+
+            case SAI_ATTR_VALUE_TYPE_IP_ADDRESS_LIST:
+                CHECK_LIST(value.ipaddrlist);
                 break;
 
             case SAI_ATTR_VALUE_TYPE_ACL_FIELD_DATA_OBJECT_LIST:
@@ -714,14 +718,32 @@ void handle_get_response(
         sai_object_type_t object_type,
         uint32_t get_attr_count,
         sai_attribute_t* get_attr_list,
-        const std::string& response)
+        const std::string& response,
+        sai_status_t status)
 {
     SWSS_LOG_ENTER();
 
-    //std::cout << "processing " << response << std::endl;
-
     // timestamp|action|objecttype:objectid|attrid=value,...
     auto v = swss::tokenize(response, '|');
+
+    if (status != SAI_STATUS_SUCCESS)
+    {
+        sai_status_t expectedStatus;
+        sai_deserialize_status(v.at(2), expectedStatus);
+
+        if (status == expectedStatus)
+        {
+            // GET api was not successful but status is equal to recording
+            return;
+        }
+
+        SWSS_LOG_WARN("status is: %s but expected: %s",
+                sai_serialize_status(status).c_str(),
+                sai_serialize_status(expectedStatus).c_str());
+        return;
+    }
+
+    //std::cout << "processing " << response << std::endl;
 
     auto values = get_values(v);
 
@@ -916,7 +938,7 @@ sai_status_t handle_bulk_route(
         if (status != SAI_STATUS_SUCCESS)
         {
             /*
-             * Entire API failes, so no need to compare statuses.
+             * Entire API fails, so no need to compare statuses.
              */
 
             return status;
@@ -928,7 +950,7 @@ sai_status_t handle_bulk_route(
             {
                 /*
                  * If recorded statuses are different than received, throw
-                 * excetion since data don't match.
+                 * exception since data don't match.
                  */
 
                 SWSS_LOG_THROW("recorded status is %s but returned is %s on %s",
@@ -969,7 +991,7 @@ void processBulk(
     // timestamp|action|objecttype||objectid|attrid=value|...|status||objectid||objectid|attrid=value|...|status||...
     auto fields = tokenize(line, "||");
 
-    auto first = fields.at(0); // timestamp|acion|objecttype
+    auto first = fields.at(0); // timestamp|action|objecttype
 
     std::string str_object_type = swss::tokenize(first, '|').at(2);
 
@@ -1063,7 +1085,7 @@ int replay(int argc, char **argv)
 
     SWSS_LOG_ENTER();
 
-    if (argc < 2)
+    if (argc == 0)
     {
         fprintf(stderr, "ERR: need to specify filename\n");
 
@@ -1198,7 +1220,12 @@ int replay(int argc, char **argv)
 
         if (status != SAI_STATUS_SUCCESS)
         {
-            SWSS_LOG_THROW("failed to execute api: %c: %s", op, sai_serialize_status(status).c_str());
+            if (api == SAI_COMMON_API_GET)
+            {
+                // GET status is checked in handle response
+            }
+            else
+                SWSS_LOG_THROW("failed to execute api: %c: %s", op, sai_serialize_status(status).c_str());
         }
 
         if (api == SAI_COMMON_API_GET)
@@ -1214,7 +1241,7 @@ int replay(int argc, char **argv)
 
             try
             {
-                handle_get_response(object_type, attr_count, attr_list, response);
+                handle_get_response(object_type, attr_count, attr_list, response, status);
             }
             catch (const std::exception &e)
             {
@@ -1244,13 +1271,16 @@ void printUsage()
     std::cout << "        Enable syslog debug messages" << std::endl << std::endl;
     std::cout << "    -u --useTempView:" << std::endl;
     std::cout << "        Enable temporary view between init and apply" << std::endl << std::endl;
+    std::cout << "    -i --inspectAsic:" << std::endl;
+    std::cout << "        Inspect ASIC by ASIC DB" << std::endl << std::endl;
     std::cout << "    -h --help:" << std::endl;
     std::cout << "        Print out this message" << std::endl << std::endl;
 }
 
 bool g_useTempView = false;
+bool g_inspectAsic = false;
 
-void handleCmdLine(int argc, char **argv)
+int handleCmdLine(int argc, char **argv)
 {
     SWSS_LOG_ENTER();
 
@@ -1262,14 +1292,13 @@ void handleCmdLine(int argc, char **argv)
             { "help",             no_argument,       0, 'h' },
             { "skipNotifySyncd",  no_argument,       0, 'C' },
             { "enableDebug",      no_argument,       0, 'd' },
+            { "inspectAsic",      no_argument,       0, 'i' },
             { 0,                  0,                 0,  0  }
         };
 
-        const char* const optstring = "hCdu";
+        const char* const optstring = "hCdui";
 
-        int option_index;
-
-        int c = getopt_long(argc, argv, optstring, long_options, &option_index);
+        int c = getopt_long(argc, argv, optstring, long_options, 0);
 
         if (c == -1)
             break;
@@ -1281,11 +1310,15 @@ void handleCmdLine(int argc, char **argv)
                 break;
 
             case 'u':
-                g_useTempView = false;
+                g_useTempView = true;
                 break;
 
             case 'C':
                 g_notifySyncd = false;
+                break;
+
+            case 'i':
+                g_inspectAsic = true;
                 break;
 
             case 'h':
@@ -1302,6 +1335,8 @@ void handleCmdLine(int argc, char **argv)
                 exit(EXIT_FAILURE);
         }
     }
+
+    return optind;
 }
 
 void sai_meta_log_syncd(
@@ -1340,11 +1375,11 @@ void sai_meta_log_syncd(
             break;
         case SAI_LOG_LEVEL_ERROR:
             p = swss::Logger::SWSS_ERROR;
-            fprintf(stderr, "ERROR: %s: %s", func, buffer);
+            fprintf(stderr, "ERROR: %s: %s\n", func, buffer);
             break;
         case SAI_LOG_LEVEL_WARN:
             p = swss::Logger::SWSS_WARN;
-            fprintf(stderr, "WARN: %s: %s", func, buffer);
+            fprintf(stderr, "WARN: %s: %s\n", func, buffer);
             break;
         case SAI_LOG_LEVEL_CRITICAL:
             p = swss::Logger::SWSS_CRIT;
@@ -1366,22 +1401,24 @@ int main(int argc, char **argv)
 
     swss::Logger::getInstance().setMinPrio(swss::Logger::SWSS_NOTICE);
 
-    handleCmdLine(argc, argv);
+    int handled = handleCmdLine(argc, argv);
+    argc -= handled;
+    argv += handled;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsuggest-attribute=format"
     sai_metadata_log = &sai_meta_log_syncd;
 #pragma GCC diagnostic pop
 
+    // sai_api_initialize will reset g_useTempView, save the value from cmdline option
+    bool useTempView = g_useTempView;
     EXIT_ON_ERROR(sai_api_initialize(0, (const sai_service_method_table_t *)&test_services));
+    g_useTempView = useTempView;
 
     sai_apis_t apis;
     sai_metadata_apis_query(sai_api_query, &apis);
 
     sai_attribute_t attr;
-
-    attr.id = SAI_REDIS_SWITCH_ATTR_USE_TEMP_VIEW;
-    attr.value.booldata = g_useTempView;
 
     /*
      * Notice that we use null object id as switch id, which is fine since
@@ -1390,9 +1427,23 @@ int main(int argc, char **argv)
 
     sai_object_id_t switch_id = SAI_NULL_OBJECT_ID;
 
-    EXIT_ON_ERROR(sai_metadata_sai_switch_api->set_switch_attribute(switch_id, &attr));
+    if (g_inspectAsic)
+    {
+        attr.id = SAI_REDIS_SWITCH_ATTR_NOTIFY_SYNCD;
+        attr.value.s32 = SAI_REDIS_NOTIFY_SYNCD_INSPECT_ASIC;
+        EXIT_ON_ERROR(sai_metadata_sai_switch_api->set_switch_attribute(switch_id, &attr));
+    }
 
-    int exitcode = replay(argc, argv);
+    int exitcode = 0;
+    if (argc > 0)
+    {
+        attr.id = SAI_REDIS_SWITCH_ATTR_USE_TEMP_VIEW;
+        attr.value.booldata = g_useTempView;
+
+        EXIT_ON_ERROR(sai_metadata_sai_switch_api->set_switch_attribute(switch_id, &attr));
+
+        exitcode = replay(argc, argv);
+    }
 
     sai_api_uninitialize();
 
